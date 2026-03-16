@@ -1,0 +1,1376 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ERP · Inversiones Alma SpA</title>
+  <meta name="description" content="Panel de gestión inteligente — Almíbar & Pangoa"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230F1F4A'/><text y='.9em' font-size='75' x='12'>🍸</text></svg>"/>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel standalone for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- SheetJS for Excel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <style>
+    body { margin: 0; padding: 0; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useRef, useEffect, useCallback } = React;
+
+
+// ─── TOKENS ───────────────────────────────────────────────────────────────────
+const C = {
+  bg:"#F7F9FC", surface:"#FFFFFF", card:"#FFFFFF",
+  sidebar:"#0F1F4A", sidebarHover:"#1A3266", sidebarActive:"#2952C8",
+  border:"#E2E8F4", borderHover:"#93AEDD",
+  blue:"#1A3A8A", blueLight:"#2952C8", blueDim:"#EEF2FF",
+  red:"#1253CC", text:"#0A1628", textDim:"#4A5878",
+  muted:"#8A9EC0", mutedLight:"#C8D4EC",
+  success:"#0A7A3E", successBg:"#EDFAF3",
+  warning:"#A05A08", warningBg:"#FFF7ED",
+  danger:"#8A1A1A", dangerBg:"#FFF0F0",
+  info:"#0A5A9A", infoBg:"#EFF7FF",
+};
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400;1,600&family=JetBrains+Mono:wght@400;500&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:${C.bg};color:${C.text};font-family:'Sora',sans-serif;min-height:100vh;font-size:14px}
+  ::-webkit-scrollbar{width:4px;height:4px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:${C.mutedLight};border-radius:2px}
+  .mono{font-family:'JetBrains Mono',monospace}
+  .serif{font-family:'Lora',Georgia,serif}
+
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}}
+  @keyframes slideIn{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+  .fade-up{animation:fadeUp .3s ease forwards}
+  .slide-in{animation:slideIn .25s ease forwards}
+
+  /* NAV */
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:500;color:rgba(255,255,255,.55);transition:all .18s;border:none;background:transparent;width:100%;text-align:left}
+  .nav-item:hover{background:${C.sidebarHover};color:#fff}
+  .nav-item.active{background:${C.sidebarActive};color:#fff;font-weight:600}
+  .nav-group-label{font-size:9.5px;font-weight:700;color:rgba(255,255,255,.3);letter-spacing:.12em;text-transform:uppercase;padding:4px 12px;margin-top:16px;margin-bottom:4px}
+
+  /* CARDS */
+  .card{background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:20px;transition:border-color .2s}
+  .card:hover{border-color:${C.borderHover}}
+  .kpi-card{background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:18px;transition:all .2s}
+  .kpi-card:hover{border-color:${C.blueLight};transform:translateY(-1px);box-shadow:0 4px 16px rgba(26,58,138,.08)}
+
+  /* INPUTS */
+  .input{width:100%;background:${C.bg};border:1px solid ${C.border};border-radius:8px;padding:9px 13px;color:${C.text};font-family:'Sora',sans-serif;font-size:13px;outline:none;resize:vertical;transition:border-color .2s}
+  .input:focus{border-color:${C.blueLight};background:#fff}
+  .input::placeholder{color:${C.muted}}
+  .select{width:100%;background:${C.bg};border:1px solid ${C.border};border-radius:8px;padding:9px 13px;color:${C.text};font-family:'Sora',sans-serif;font-size:13px;outline:none;appearance:none;cursor:pointer;transition:border-color .2s}
+  .select:focus{border-color:${C.blueLight}}
+  .label{font-size:11px;font-weight:600;color:${C.textDim};text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px;display:block}
+
+  /* BUTTONS */
+  .btn-primary{background:linear-gradient(135deg,${C.blue},${C.blueLight});color:#fff;border:none;cursor:pointer;font-family:'Sora',sans-serif;font-weight:600;border-radius:8px;padding:9px 18px;font-size:13px;transition:all .2s;display:flex;align-items:center;gap:6px}
+  .btn-primary:hover:not(:disabled){filter:brightness(1.1);transform:translateY(-1px);box-shadow:0 4px 16px rgba(26,58,138,.3)}
+  .btn-primary:disabled{opacity:.4;cursor:not-allowed}
+  .btn-ghost{background:transparent;color:${C.textDim};border:1px solid ${C.border};cursor:pointer;font-family:'Sora',sans-serif;font-weight:500;border-radius:8px;padding:8px 14px;font-size:12.5px;transition:all .2s}
+  .btn-ghost:hover{border-color:${C.blueLight};color:${C.blue}}
+  .btn-sm{padding:5px 12px;font-size:11.5px}
+
+  /* TAGS */
+  .tag{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600}
+  .tag-blue{background:${C.blueDim};color:${C.blue};border:1px solid #C0CFEE}
+  .tag-green{background:${C.successBg};color:${C.success};border:1px solid #B0DEC8}
+  .tag-warn{background:${C.warningBg};color:${C.warning};border:1px solid #F0C080}
+  .tag-danger{background:${C.dangerBg};color:${C.danger};border:1px solid #F0B0B0}
+  .tag-gray{background:#F0F2F8;color:${C.muted};border:1px solid ${C.border}}
+
+  /* AI OUTPUT */
+  .ai-box{background:#F7F9FF;border:1px solid #C8D4EC;border-radius:10px;padding:18px;font-size:13.5px;line-height:1.85;color:${C.text};min-height:100px;position:relative;white-space:pre-wrap}
+  .ai-box.loading{background:linear-gradient(90deg,#F7F9FF,#EEF2FF,#F7F9FF);background-size:200% auto;animation:shimmer 2s linear infinite}
+  .spinner{width:15px;height:15px;border:2px solid rgba(26,58,138,.15);border-top-color:${C.blue};border-radius:50%;animation:spin .65s linear infinite;flex-shrink:0}
+  .copy-btn{position:absolute;top:10px;right:10px;background:#fff;border:1px solid ${C.border};color:${C.muted};cursor:pointer;border-radius:6px;padding:3px 9px;font-size:10.5px;font-family:'JetBrains Mono',monospace;transition:all .15s}
+  .copy-btn:hover{border-color:${C.blueLight};color:${C.blue}}
+
+  /* SECTION */
+  .section-title{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+  .section-dot{width:8px;height:8px;border-radius:50%;background:${C.blueLight}}
+  .divider{height:1px;background:${C.border};margin:16px 0}
+
+  /* DATA COMPLETENESS */
+  .progress-bar{height:4px;background:${C.border};border-radius:2px;overflow:hidden}
+  .progress-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,${C.blue},${C.blueLight});transition:width .5s ease}
+
+  /* ALERT */
+  .alert{border-radius:8px;padding:10px 14px;font-size:13px;display:flex;align-items:flex-start;gap:10px;margin-bottom:8px}
+  .alert-info{background:${C.infoBg};border:1px solid #B0D4F0;color:${C.info}}
+  .alert-warn{background:${C.warningBg};border:1px solid #F0D090;color:${C.warning}}
+  .alert-danger{background:${C.dangerBg};border:1px solid #F0B8B8;color:${C.danger}}
+  .alert-success{background:${C.successBg};border:1px solid #A0D8B8;color:${C.success}}
+
+  /* TABS within module */
+  .mod-tab{padding:7px 14px;border-radius:20px;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s;border:none;background:transparent;color:${C.muted}}
+  .mod-tab.active{background:${C.blueDim};color:${C.blue}}
+  .mod-tab:hover:not(.active){color:${C.text}}
+
+  /* LOCAL SWITCHER */
+  .local-btn{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,.12);background:transparent;color:rgba(255,255,255,.6);cursor:pointer;font-family:'Sora',sans-serif;font-size:12px;font-weight:500;transition:all .2s;width:100%;text-align:left}
+  .local-btn:hover{background:rgba(255,255,255,.08);color:#fff}
+  .local-btn.active{background:rgba(255,255,255,.12);color:#fff;border-color:rgba(255,255,255,.3)}
+
+  /* TABLE */
+  .data-table{width:100%;border-collapse:collapse}
+  .data-table th{font-size:11px;font-weight:700;color:${C.muted};text-transform:uppercase;letter-spacing:.06em;padding:8px 12px;text-align:left;border-bottom:2px solid ${C.border}}
+  .data-table td{padding:10px 12px;border-bottom:1px solid ${C.border};font-size:13px;color:${C.text}}
+  .data-table tr:hover td{background:${C.bg}}
+
+  /* CHAT */
+  .chat-bubble-user{background:linear-gradient(135deg,${C.blue},${C.blueLight});color:#fff;border-radius:14px 14px 2px 14px;padding:11px 15px;font-size:13.5px;line-height:1.7;max-width:78%}
+  .chat-bubble-ai{background:#fff;border:1px solid ${C.border};border-radius:14px 14px 14px 2px;padding:11px 15px;font-size:13.5px;line-height:1.7;max-width:78%;white-space:pre-wrap}
+`;
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+async function claude(system, user, onChunk) {
+  const key = window.__ALMA_KEY__;
+  if (!key) throw new Error("API key no configurada — ingresa tu clave Anthropic en el panel superior");
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":key,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1800, system, messages:[{role:"user",content:user}], stream:true }),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  const reader = res.body.getReader(); const dec = new TextDecoder(); let full="";
+  while(true){
+    const {done,value}=await reader.read(); if(done) break;
+    for(const line of dec.decode(value).split("\n")){
+      if(line.startsWith("data: ")&&line!=="data: [DONE]"){
+        try{ const t=JSON.parse(line.slice(6))?.delta?.text; if(t){full+=t;onChunk(full);} }catch{}
+      }
+    }
+  }
+  return full;
+}
+
+// ─── SHARED CONTEXT BUILDER ───────────────────────────────────────────────────
+function buildContext(biz, local) {
+  const L = biz.locales[local];
+  const fin = biz.finanzas[local];
+  const rrhh = biz.rrhh[local];
+  const ops = biz.operaciones[local];
+  const legal = biz.legal[local];
+  const est = biz.estrategia[local];
+  const lines = [`EMPRESA: Inversiones Alma SpA | LOCAL: ${local==="almibar"?"Almíbar (Bar, Curicó)":"Pangoa (Restaurante Peruano, Talca)"}`];
+  const add = (label, obj) => { const vals=Object.entries(obj).filter(([,v])=>v?.toString().trim()); if(vals.length) { lines.push(`\n[${label}]`); vals.forEach(([k,v])=>lines.push(`${k}: ${v}`)); }};
+  add("PERFIL DEL LOCAL", L);
+  add("FINANZAS", fin);
+  add("RRHH", rrhh);
+  add("OPERACIONES", ops);
+  add("LEGAL", legal);
+  add("ESTRATEGIA", est);
+  return lines.join("\n");
+}
+
+function countFilled(obj) { return Object.values(obj||{}).filter(v=>v?.toString().trim()).length; }
+function totalFields(obj) { return Object.keys(obj||{}).length; }
+
+// ─── SHARED UI ────────────────────────────────────────────────────────────────
+function AIBox({ text, loading, placeholder, onCopy }) {
+  const [copied,setCopied]=useState(false);
+  const copy=()=>{ if(!text) return; navigator.clipboard.writeText(text); setCopied(true); setTimeout(()=>setCopied(false),1500); };
+  return (
+    <div className={`ai-box ${loading?"loading":""}`}>
+      {!text&&!loading&&<span style={{color:C.muted,fontStyle:"italic"}}>{placeholder||"El análisis aparecerá aquí..."}</span>}
+      {loading&&!text&&<div style={{display:"flex",alignItems:"center",gap:10,color:C.muted}}><div className="spinner"/><span>Analizando con IA...</span></div>}
+      {text&&<span>{text}{loading&&<span style={{color:C.blueLight,animation:"pulse 1s infinite"}}>▋</span>}</span>}
+      {text&&!loading&&<button className="copy-btn" onClick={copy}>{copied?"✓ copiado":"copiar"}</button>}
+    </div>
+  );
+}
+
+function ModTabs({ tabs, active, onChange }) {
+  return (
+    <div style={{display:"flex",gap:4,background:C.bg,padding:4,borderRadius:24,border:`1px solid ${C.border}`,marginBottom:20,width:"fit-content"}}>
+      {tabs.map(t=><button key={t.id} className={`mod-tab ${active===t.id?"active":""}`} onClick={()=>onChange(t.id)}>{t.icon} {t.label}</button>)}
+    </div>
+  );
+}
+
+function DataGrid({ fields, data, onChange, cols=2 }) {
+  return (
+    <div style={{display:"grid",gridTemplateColumns:`repeat(${cols},1fr)`,gap:14}}>
+      {fields.map(f=>(
+        <div key={f.key} style={{gridColumn:f.full?"span 2":"span 1"}}>
+          <label className="label">{f.label}</label>
+          {f.type==="select"
+            ? <select className="select" value={data[f.key]||""} onChange={e=>onChange(f.key,e.target.value)}>
+                <option value="">—</option>
+                {f.options.map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            : f.rows
+              ? <textarea className="input" rows={f.rows} placeholder={f.placeholder||""} value={data[f.key]||""} onChange={e=>onChange(f.key,e.target.value)}/>
+              : <input className="input" type={f.type||"text"} placeholder={f.placeholder||""} value={data[f.key]||""} onChange={e=>onChange(f.key,e.target.value)}/>
+          }
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Completeness({ data, label }) {
+  const filled=countFilled(data); const total=totalFields(data); const pct=total?Math.round(filled/total*100):0;
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:10}}>
+      <div style={{flex:1}}>
+        <div className="progress-bar"><div className="progress-fill" style={{width:`${pct}%`}}/></div>
+      </div>
+      <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{filled}/{total} campos · {pct}%</span>
+    </div>
+  );
+}
+
+function KpiCard({ icon, label, value, sub, trend, color="#1A3A8A" }) {
+  return (
+    <div className="kpi-card">
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:10}}>
+        <span style={{fontSize:20}}>{icon}</span>
+        {trend&&<span style={{fontSize:11,fontWeight:700,color:trend>0?C.success:C.danger}}>{trend>0?"+":""}{trend}%</span>}
+      </div>
+      <div style={{fontSize:22,fontWeight:700,color,marginBottom:2}}>{value||"—"}</div>
+      <div style={{fontSize:12,fontWeight:600,color:C.text,marginBottom:2}}>{label}</div>
+      {sub&&<div style={{fontSize:11,color:C.muted}}>{sub}</div>}
+    </div>
+  );
+}
+
+function SectionHeader({ icon, title, children }) {
+  return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+      <div className="section-title" style={{marginBottom:0}}>
+        <span style={{fontSize:16}}>{icon}</span>
+        <h3 style={{fontSize:15,fontWeight:700,color:C.text}}>{title}</h3>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ─── INITIAL STATE ────────────────────────────────────────────────────────────
+const emptyLocal = () => ({
+  nombre:"", tipo:"", ciudad:"", concepto:"", propuesta:"", publico:"", diferenciadores:"",
+  productosEstrella:"", ambiente:"", tono:"", horario:"", notas:"",
+});
+const emptyFin = () => ({
+  ventasMensual:"", ventasPromDia:"", ticketPromedio:"", costoVentas:"", costosOperacionales:"",
+  sueldos:"", arriendoServicios:"", margenEstimado:"", deudas:"", flujoCaja:"",
+  principalGasto:"", principalIngreso:"", mesesCriticos:"", metaVentas:"",
+});
+const emptyRRHH = () => ({
+  cantEmpleados:"", cargos:"", sueldoPromedio:"", tipoContratos:"", horasSemana:"",
+  rotacion:"", problemasActuales:"", climaLaboral:"", capacitaciones:"", beneficios:"",
+  cumplimientoLaboral:"", empleadosExtranjeros:"",
+});
+const emptyOps = () => ({
+  capacidadMesas:"", clientesDia:"", diasOperacion:"", principalesProveedores:"",
+  controlInventario:"", desperdicioEstimado:"", tiempoServicio:"", quejasRecurrentes:"",
+  tecnologiaUsada:"", procesosDocumentados:"", cuellosDeBottella:"",
+});
+const emptyLegal = () => ({
+  permisosMunicipales:"", licenciaAlcohol:"", patenteComercial:"", situacionTributaria:"",
+  multasPendientes:"", vencimientosCercanos:"", reclamosVecinos:"", representanteLegal:"",
+  contadorExterno:"", observaciones:"",
+});
+const emptyEst = () => ({
+  vision:"", mision:"", objetivosAnio:"", principalDesafio:"", oportunidadVista:"",
+  competidores:"", posicionamiento:"", inversionesPlaneadas:"", planesExpansion:"", kpisDeseados:"",
+});
+
+const INITIAL_BIZ = {
+  locales:{ almibar:emptyLocal(), pangoa:emptyLocal() },
+  finanzas:{ almibar:emptyFin(), pangoa:emptyFin() },
+  rrhh:{ almibar:emptyRRHH(), pangoa:emptyRRHH() },
+  operaciones:{ almibar:emptyOps(), pangoa:emptyOps() },
+  legal:{ almibar:emptyLegal(), pangoa:emptyLegal() },
+  estrategia:{ almibar:emptyEst(), pangoa:emptyEst() },
+};
+
+// ─── MODULE: CEO DASHBOARD ────────────────────────────────────────────────────
+function ModuleCEO({ biz, local }) {
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+  const [subTab,setSubTab]=useState("vision");
+
+  const analyze = async (tipo) => {
+    setLoading(true); setOutput("");
+    const ctx = buildContext(biz, local);
+    const sys = `Eres el asesor ejecutivo de confianza del CEO de un negocio gastronómico chileno. Ves el panorama completo: finanzas, personas, operaciones, marketing y estrategia. Eres directo, honesto y priorizas lo que realmente importa. Siempre en español.`;
+    const prompts = {
+      vision:`Analiza el estado general del negocio y dame una visión ejecutiva completa.\n\n${ctx}\n\nDame:\n1. 🔴 ALERTAS CRÍTICAS: Lo que requiere atención inmediata (si las hay)\n2. 🟡 PUNTOS DE MEJORA: Áreas con oportunidad clara\n3. 🟢 FORTALEZAS: Lo que está funcionando bien\n4. 🎯 TOP 3 PRIORIDADES ESTA SEMANA: Las acciones de mayor impacto\n5. 📊 DIAGNÓSTICO GENERAL: Estado del negocio en una escala 1-10 con justificación`,
+      decisiones:`Basado en el contexto del negocio, ayúdame a tomar decisiones clave.\n\n${ctx}\n\nIdentifica:\n1. Las 3 DECISIONES MÁS URGENTES que el CEO debe tomar ahora\n2. Para cada decisión: opciones posibles, pros/contras, y tu recomendación\n3. RIESGOS actuales que podrían escalar si no se actúa\n4. Una decisión que se está postergando y no debería`,
+      oportunidades:`Identifica las mejores oportunidades de crecimiento.\n\n${ctx}\n\nDame:\n1. TOP 3 OPORTUNIDADES DE INGRESOS inmediatas (este mes)\n2. TOP 3 OPORTUNIDADES DE REDUCCIÓN DE COSTOS\n3. Una oportunidad de mediano plazo (3-6 meses) que vale la pena planificar\n4. Qué debería DEJAR DE HACER el negocio para liberar recursos`,
+    };
+    try { await claude(sys, prompts[tipo]||prompts.vision, t=>setOutput(t)); }
+    catch { setOutput("Error al conectar. Intenta nuevamente."); }
+    setLoading(false);
+  };
+
+  const fin=biz.finanzas[local]; const rrhh=biz.rrhh[local];
+  const ops=biz.operaciones[local];
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      {/* KPI summary */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+        <KpiCard icon="💰" label="Ventas Mensuales" value={fin.ventasMensual?`$${Number(fin.ventasMensual).toLocaleString("es-CL")}`:null} sub="CLP / mes"/>
+        <KpiCard icon="🎫" label="Ticket Promedio" value={fin.ticketPromedio?`$${Number(fin.ticketPromedio).toLocaleString("es-CL")}`:null} sub="por servicio"/>
+        <KpiCard icon="👥" label="Equipo" value={rrhh.cantEmpleados?`${rrhh.cantEmpleados} personas`:null} sub={rrhh.tipoContratos||"—"}/>
+        <KpiCard icon="🪑" label="Capacidad" value={ops.capacidadMesas?`${ops.capacidadMesas} mesas`:null} sub={ops.clientesDia?`~${ops.clientesDia} clientes/día`:"—"}/>
+      </div>
+
+      <ModTabs tabs={[{id:"vision",icon:"🔭",label:"Visión Ejecutiva"},{id:"decisiones",icon:"⚡",label:"Decisiones Clave"},{id:"oportunidades",icon:"🚀",label:"Oportunidades"}]} active={subTab} onChange={setSubTab}/>
+
+      <div className="card">
+        <SectionHeader icon="🤖" title="Análisis CEO con IA">
+          <button className="btn-primary" onClick={()=>analyze(subTab)} disabled={loading}>
+            {loading?<><div className="spinner"/>Analizando...</>:<>Generar Análisis</>}
+          </button>
+        </SectionHeader>
+        <p style={{fontSize:12,color:C.muted,marginBottom:14}}>La IA analiza todos los datos ingresados en todos los módulos para darte una visión integrada.</p>
+        <AIBox text={output} loading={loading} placeholder="Ingresa datos en los módulos (Finanzas, RRHH, Operaciones…) para obtener un análisis ejecutivo real y preciso."/>
+      </div>
+
+      {/* Completeness overview */}
+      <div className="card">
+        <SectionHeader icon="📋" title="Completitud de Datos"/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          {[["Perfil del Local","locales"],["Finanzas","finanzas"],["RRHH","rrhh"],["Operaciones","operaciones"],["Legal","legal"],["Estrategia","estrategia"]].map(([label,key])=>(
+            <div key={key}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span style={{fontSize:12,fontWeight:600,color:C.textDim}}>{label}</span>
+                <span style={{fontSize:11,color:C.muted}}>{countFilled(biz[key][local])}/{totalFields(biz[key][local])}</span>
+              </div>
+              <Completeness data={biz[key][local]}/>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── MODULE: MI LOCAL ─────────────────────────────────────────────────────────
+function ModuleLocal({ biz, local, updateBiz }) {
+  const data = biz.locales[local];
+  const set = (k,v) => updateBiz("locales",local,k,v);
+  const [saved,setSaved]=useState(false);
+  const [aiOut,setAiOut]=useState(""); const [aiLoad,setAiLoad]=useState(false);
+
+  const save=()=>{ setSaved(true); setTimeout(()=>setSaved(false),2000); };
+
+  const analyzeConcepto = async () => {
+    setAiLoad(true); setAiOut("");
+    const ctx = Object.entries(data).filter(([,v])=>v.trim()).map(([k,v])=>`${k}: ${v}`).join("\n");
+    if(!ctx.trim()){ setAiOut("Ingresa información del local primero."); setAiLoad(false); return; }
+    const sys=`Eres consultor de branding y posicionamiento gastronómico en Chile. Directo y honesto. En español.`;
+    const prompt=`Evalúa este perfil de negocio y ayúdame a afinar el concepto:\n\n${ctx}\n\n1. ¿EL CONCEPTO ES CLARO Y ÚNICO? Análisis honesto\n2. PROPUESTA DE VALOR: ¿Está bien definida? Sugerencia de mejora\n3. IDENTIDAD DE MARCA: ¿Qué personalidad transmite? ¿Es coherente?\n4. REFORMULACIÓN SUGERIDA: Versión mejorada del concepto en 2-3 oraciones\n5. PREGUNTAS CLAVE que deberías responder para definir mejor tu identidad`;
+    try { await claude(sys,prompt,t=>setAiOut(t)); }
+    catch { setAiOut("Error al conectar."); }
+    setAiLoad(false);
+  };
+
+  const fields = [
+    {key:"nombre",label:"Nombre del local",placeholder:"Ej: Almíbar"},
+    {key:"tipo",label:"Tipo de negocio",placeholder:"Ej: Bar-restaurante fusión Nikkei"},
+    {key:"ciudad",label:"Ciudad",placeholder:"Ej: Curicó"},
+    {key:"horario",label:"Horario y días",placeholder:"Ej: Mar-Dom 12:00-24:00"},
+    {key:"concepto",label:"Concepto (con tus palabras)",placeholder:"Describe qué es este lugar sin filtros...",rows:3,full:true},
+    {key:"propuesta",label:"Propuesta de valor",placeholder:"¿Por qué elegirte a ti? ¿Qué prometes?",rows:2,full:true},
+    {key:"publico",label:"Público objetivo real",placeholder:"¿Quién es tu cliente? Edad, estilo, qué busca...",rows:2},
+    {key:"diferenciadores",label:"Lo que nos hace únicos",placeholder:"¿Qué tienes que nadie más tiene?",rows:2},
+    {key:"productosEstrella",label:"Platos / productos estrella",placeholder:"Los que más te definen e identifican...",rows:2},
+    {key:"ambiente",label:"Ambiente y experiencia",placeholder:"¿Cómo se siente estar aquí?",rows:2},
+    {key:"tono",label:"Tono de marca",placeholder:"¿Cómo habla este local? ¿Festivo, íntimo, serio?",rows:2},
+    {key:"notas",label:"Contexto adicional",placeholder:"Historia, problemas, oportunidades que ves...",rows:2,full:true},
+  ];
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      <div className="card">
+        <SectionHeader icon="🏪" title="Perfil del Local"><Completeness data={data}/></SectionHeader>
+        <DataGrid fields={fields} data={data} onChange={set}/>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:18}}>
+          <button className="btn-ghost btn-sm" onClick={analyzeConcepto} disabled={aiLoad}>🔍 Analizar concepto con IA</button>
+          <button className="btn-primary" onClick={save}>{saved?"✓ Guardado":"💾 Guardar Perfil"}</button>
+        </div>
+      </div>
+      {(aiOut||aiLoad)&&(
+        <div className="card">
+          <SectionHeader icon="🤖" title="Evaluación del Concepto"/>
+          <AIBox text={aiOut} loading={aiLoad} placeholder=""/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MODULE: MARKETING ────────────────────────────────────────────────────────
+function ModuleMarketing({ biz, local }) {
+  const [subTab,setSubTab]=useState("competencia");
+  const [form,setForm]=useState({competidores:"",foco:"general",objetivo:"aumentar_clientes",canales:"instagram,whatsapp",periodo:"3_meses",presupuesto:"bajo",tipo_contenido:"post_instagram",tema_contenido:"",tono:"festivo",mes_campana:new Date().getMonth().toString()});
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+  const ctx=buildContext(biz,local);
+  const setF=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const run = async () => {
+    setLoading(true); setOutput("");
+    const sys=`Eres estratega de marketing gastronómico en Chile. Siempre en español. Usa el contexto real del negocio para dar recomendaciones específicas.`;
+    const meses=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+    const prompts={
+      competencia:`Analiza la competencia.\nCONTEXTO DEL NEGOCIO:\n${ctx}\n\nCompetidores identificados: ${form.competidores||"no especificados"}\nFoco: ${form.foco}\n\nDame: 1) Perfil de cada competidor 2) Brechas del mercado 3) Ventaja diferencial real 4) 3 acciones para diferenciarnos`,
+      estrategia:`Crea una estrategia de marketing.\nCONTEXTO:\n${ctx}\n\nObjetivo: ${form.objetivo} | Canales: ${form.canales} | Período: ${form.periodo} | Presupuesto: ${form.presupuesto}\n\nDame: 1) Idea fuerza central 2) Tácticas por canal 3) Calendario de acciones 4) Quick wins esta semana 5) 3 KPIs`,
+      contenido:`Crea contenido de marketing.\nCONTEXTO:\n${ctx}\n\nTipo: ${form.tipo_contenido} | Tema: ${form.tema_contenido} | Tono: ${form.tono}\n\nCrea 3 variaciones listas para publicar con hashtags y sugerencia visual.`,
+      campanas:`Genera ideas de campañas para ${meses[parseInt(form.mes_campana)]}.\nCONTEXTO:\n${ctx}\n\n4-5 ideas con: nombre, concepto, timing, ejecución, inversión estimada y frase clave.`,
+    };
+    try { await claude(sys, prompts[subTab]||prompts.estrategia, t=>setOutput(t)); }
+    catch { setOutput("Error al conectar."); }
+    setLoading(false);
+  };
+
+  const meses=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      <ModTabs tabs={[{id:"competencia",icon:"🔍",label:"Competencia"},{id:"estrategia",icon:"🎯",label:"Estrategia"},{id:"contenido",icon:"✍️",label:"Contenido"},{id:"campanas",icon:"💡",label:"Campañas"}]} active={subTab} onChange={setSubTab}/>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        <div className="card">
+          <SectionHeader icon="⚙️" title="Parámetros"/>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            {subTab==="competencia"&&<><label className="label">Competidores</label><input className="input" placeholder="Ej: Novu, Mamba, San Pancho..." value={form.competidores} onChange={e=>setF("competidores",e.target.value)}/></>}
+            {subTab==="estrategia"&&<>
+              <div><label className="label">Objetivo</label><select className="select" value={form.objetivo} onChange={e=>setF("objetivo",e.target.value)}><option value="aumentar_clientes">Aumentar clientes</option><option value="fidelizar">Fidelizar</option><option value="aumentar_ticket">Subir ticket promedio</option><option value="delivery">Potenciar delivery</option><option value="posicionamiento">Posicionamiento</option></select></div>
+              <div><label className="label">Presupuesto</label><select className="select" value={form.presupuesto} onChange={e=>setF("presupuesto",e.target.value)}><option value="bajo">Bajo (orgánico)</option><option value="medio">Medio ($50-150k)</option><option value="alto">Alto (+$150k)</option></select></div>
+              <div><label className="label">Canales (separados por coma)</label><input className="input" value={form.canales} onChange={e=>setF("canales",e.target.value)}/></div>
+              <div><label className="label">Período</label><select className="select" value={form.periodo} onChange={e=>setF("periodo",e.target.value)}><option value="1_mes">1 mes</option><option value="3_meses">3 meses</option><option value="6_meses">6 meses</option></select></div>
+            </>}
+            {subTab==="contenido"&&<>
+              <div><label className="label">Tipo de contenido</label><select className="select" value={form.tipo_contenido} onChange={e=>setF("tipo_contenido",e.target.value)}><option value="post_instagram">Post Instagram</option><option value="story">Story</option><option value="promo">Promoción</option><option value="evento">Evento</option><option value="whatsapp">WhatsApp</option></select></div>
+              <div><label className="label">Tema o contexto</label><textarea className="input" rows={3} value={form.tema_contenido} onChange={e=>setF("tema_contenido",e.target.value)} placeholder="¿De qué trata el contenido?"/></div>
+              <div><label className="label">Tono</label><select className="select" value={form.tono} onChange={e=>setF("tono",e.target.value)}><option value="festivo">Festivo</option><option value="elegante">Elegante</option><option value="calidez">Calidez familiar</option><option value="directo">Directo</option></select></div>
+            </>}
+            {subTab==="campanas"&&<><label className="label">Mes</label><select className="select" value={form.mes_campana} onChange={e=>setF("mes_campana",e.target.value)}>{meses.map((m,i)=><option key={i} value={i}>{m}</option>)}</select></>}
+          </div>
+        </div>
+        <div className="card" style={{display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+          <div>
+            <SectionHeader icon="📊" title="Contexto del Negocio"/>
+            <p style={{fontSize:12,color:C.muted,lineHeight:1.7}}>La IA usará toda la información que has ingresado en Finanzas, RRHH, Operaciones y el perfil del local para generar recomendaciones precisas y relevantes.</p>
+            <div style={{marginTop:12}}>
+              <Completeness data={{...biz.locales[local],...biz.finanzas[local]}}/>
+            </div>
+          </div>
+          <button className="btn-primary" style={{marginTop:16}} onClick={run} disabled={loading}>
+            {loading?<><div className="spinner"/>Generando...</>:<>🚀 Generar con IA</>}
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <SectionHeader icon="🤖" title="Resultado"/>
+        <AIBox text={output} loading={loading} placeholder="Configura los parámetros y haz clic en Generar."/>
+      </div>
+    </div>
+  );
+}
+
+// ─── MODULE: FINANZAS ─────────────────────────────────────────────────────────
+function ModuleFinanzas({ biz, local, updateBiz }) {
+  const data=biz.finanzas[local];
+  const set=(k,v)=>updateBiz("finanzas",local,k,v);
+  const [subTab,setSubTab]=useState("datos");
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+  const [saved,setSaved]=useState(false);
+
+  const fields=[
+    {key:"ventasMensual",label:"Ventas mensuales (CLP)",type:"number",placeholder:"Ej: 4500000"},
+    {key:"ventasPromDia",label:"Ventas promedio día (CLP)",type:"number",placeholder:"Ej: 180000"},
+    {key:"ticketPromedio",label:"Ticket promedio (CLP)",type:"number",placeholder:"Ej: 12000"},
+    {key:"costoVentas",label:"Costo de ventas %",type:"number",placeholder:"Ej: 30"},
+    {key:"costosOperacionales",label:"Costos operacionales/mes",type:"number",placeholder:"Ej: 800000"},
+    {key:"sueldos",label:"Total sueldos/mes (CLP)",type:"number",placeholder:"Ej: 2200000"},
+    {key:"arriendoServicios",label:"Arriendo + servicios/mes",type:"number",placeholder:"Ej: 650000"},
+    {key:"margenEstimado",label:"Margen estimado %",type:"number",placeholder:"Ej: 18"},
+    {key:"deudas",label:"Deudas o créditos activos",placeholder:"Ej: Crédito BCI $2M a 12 meses"},
+    {key:"flujoCaja",label:"Situación flujo de caja",type:"select",options:["Holgado","Normal","Ajustado","Crítico"]},
+    {key:"mesesCriticos",label:"Meses de baja venta",placeholder:"Ej: julio, agosto"},
+    {key:"metaVentas",label:"Meta de ventas mensual",type:"number",placeholder:"Ej: 6000000"},
+    {key:"principalGasto",label:"Principal gasto",placeholder:"Ej: Sueldos (45% del total)"},
+    {key:"principalIngreso",label:"Principal fuente de ingreso",placeholder:"Ej: Cenas viernes y sábado"},
+  ];
+
+  const analyze = async (tipo) => {
+    setLoading(true); setOutput("");
+    const ctx=buildContext(biz,local);
+    const sys=`Eres CFO/asesor financiero de negocios gastronómicos chilenos. Conoces bien la operación de restaurantes y bares: costos de insumos, márgenes típicos, impuestos (IVA 19%, PPM), BCI y Mercado Pago. Siempre en español.`;
+    const prompts={
+      diagnostico:`Analiza la situación financiera completa.\nCONTEXTO:\n${ctx}\n\n1. SEMÁFORO FINANCIERO: Verde/Amarillo/Rojo con justificación\n2. ANÁLISIS DE MÁRGENES: ¿Están sanos? Comparación con benchmarks del rubro\n3. PRINCIPALES RIESGOS FINANCIEROS\n4. OPORTUNIDADES DE MEJORA DE RENTABILIDAD\n5. RECOMENDACIONES INMEDIATAS (esta semana)`,
+      flujo:`Analiza el flujo de caja y liquidez.\nCONTEXTO:\n${ctx}\n\n1. DIAGNÓSTICO DE LIQUIDEZ actual\n2. PROYECCIÓN de los próximos 3 meses (considerando meses críticos si los hay)\n3. ESTRATEGIAS para mejorar el flujo de caja\n4. ALERTAS de liquidez que debo monitorear`,
+      precios:`Ayúdame a definir y optimizar precios.\nCONTEXTO:\n${ctx}\n\n1. ¿LOS PRECIOS ACTUALES son sostenibles dado el margen?\n2. ANÁLISIS DE PUNTO DE EQUILIBRIO estimado\n3. RECOMENDACIÓN DE AJUSTE DE PRECIOS\n4. ESTRATEGIAS DE REVENUE MANAGEMENT para el tipo de negocio`,
+    };
+    try { await claude(sys,prompts[tipo]||prompts.diagnostico,t=>setOutput(t)); }
+    catch { setOutput("Error al conectar."); }
+    setLoading(false);
+  };
+
+  const ventasNum=Number(data.ventasMensual||0);
+  const sueldosNum=Number(data.sueldos||0);
+  const costosOp=Number(data.costosOperacionales||0);
+  const arriendo=Number(data.arriendoServicios||0);
+  const costoVtasPct=Number(data.costoVentas||0)/100;
+  const costoVtas=ventasNum*costoVtasPct;
+  const totalCostos=sueldosNum+costosOp+arriendo+costoVtas;
+  const utilidad=ventasNum-totalCostos;
+  const margenReal=ventasNum>0?Math.round(utilidad/ventasNum*100):null;
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      <ModTabs tabs={[{id:"datos",icon:"📝",label:"Datos"},{id:"diagnostico",icon:"📊",label:"Diagnóstico"},{id:"flujo",icon:"💧",label:"Flujo de Caja"},{id:"precios",icon:"🏷️",label:"Precios"}]} active={subTab} onChange={setSubTab}/>
+
+      {subTab==="datos"&&(
+        <>
+          {ventasNum>0&&(
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+              <KpiCard icon="💰" label="Ventas/mes" value={`$${ventasNum.toLocaleString("es-CL")}`}/>
+              <KpiCard icon="📤" label="Costos totales" value={`$${Math.round(totalCostos).toLocaleString("es-CL")}`} color={totalCostos>ventasNum?C.danger:C.text}/>
+              <KpiCard icon="📈" label="Utilidad estimada" value={`$${Math.round(utilidad).toLocaleString("es-CL")}`} color={utilidad<0?C.danger:C.success}/>
+              <KpiCard icon="%" label="Margen real" value={margenReal!==null?`${margenReal}%`:null} color={margenReal<10?C.danger:margenReal<20?C.warning:C.success}/>
+            </div>
+          )}
+          <div className="card">
+            <SectionHeader icon="💰" title="Datos Financieros"><Completeness data={data}/></SectionHeader>
+            <DataGrid fields={fields} data={data} onChange={set}/>
+            <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}>
+              <button className="btn-primary" onClick={()=>setSaved(true)}>{saved?"✓ Guardado":"💾 Guardar"}</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {subTab!=="datos"&&(
+        <div className="card">
+          <SectionHeader icon="🤖" title={{diagnostico:"Diagnóstico Financiero",flujo:"Análisis de Flujo de Caja",precios:"Optimización de Precios"}[subTab]}>
+            <button className="btn-primary" onClick={()=>analyze(subTab)} disabled={loading}>
+              {loading?<><div className="spinner"/>Analizando...</>:<>Analizar con IA</>}
+            </button>
+          </SectionHeader>
+          <AIBox text={output} loading={loading} placeholder={`Ingresa los datos financieros y genera el ${subTab}.`}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MODULE: RRHH ─────────────────────────────────────────────────────────────
+function ModuleRRHH({ biz, local, updateBiz }) {
+  const data=biz.rrhh[local];
+  const set=(k,v)=>updateBiz("rrhh",local,k,v);
+  const [subTab,setSubTab]=useState("datos");
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+
+  const fields=[
+    {key:"cantEmpleados",label:"N° de empleados",type:"number",placeholder:"Ej: 8"},
+    {key:"cargos",label:"Cargos existentes",placeholder:"Ej: 2 garzones, 1 cocinero, 1 cajero…"},
+    {key:"sueldoPromedio",label:"Sueldo promedio (CLP)",type:"number",placeholder:"Ej: 480000"},
+    {key:"tipoContratos",label:"Tipo de contratos",type:"select",options:["Todos indefinidos","Mayoria indefinidos","Mix indefinido/plazo","Mayoría a plazo fijo","Honorarios"]},
+    {key:"horasSemana",label:"Horas trabajo/semana",placeholder:"Ej: 45 horas, turno 8:00-17:00"},
+    {key:"rotacion",label:"Rotación de personal",type:"select",options:["Muy baja","Baja","Normal","Alta","Muy alta"]},
+    {key:"climaLaboral",label:"Clima laboral actual",type:"select",options:["Excelente","Bueno","Regular","Tenso","Crítico"]},
+    {key:"empleadosExtranjeros",label:"Empleados extranjeros",placeholder:"Ej: 2 peruanos con visa temporal"},
+    {key:"cumplimientoLaboral",label:"Cumplimiento laboral",type:"select",options:["Al día","Con observaciones","Con multas pendientes","Desconozco estado"]},
+    {key:"capacitaciones",label:"Capacitaciones vigentes",placeholder:"Ej: Manipulación alimentos, protocolo servicio"},
+    {key:"beneficios",label:"Beneficios al personal",placeholder:"Ej: colación, bono asistencia"},
+    {key:"problemasActuales",label:"Problemas actuales de RRHH",placeholder:"Ej: alta rotación en cocina, conflictos de turno…",rows:2,full:true},
+  ];
+
+  const analyze = async (tipo) => {
+    setLoading(true); setOutput("");
+    const ctx=buildContext(biz,local);
+    const sys=`Eres especialista en RRHH para negocios gastronómicos chilenos. Conoces la ley laboral chilena, la Ley 21.325 de migrantes, y la realidad operativa de bares y restaurantes. Siempre en español.`;
+    const prompts={
+      diagnostico:`Diagnostica la situación de RRHH.\nCONTEXTO:\n${ctx}\n\n1. SEMÁFORO RRHH: Estado general de la gestión de personas\n2. RIESGOS LABORALES: Brechas legales o conflictos potenciales\n3. COSTO DE PERSONAS: ¿Es sostenible? Optimizaciones posibles\n4. CULTURA Y CLIMA: Diagnóstico y recomendaciones\n5. TOP 3 ACCIONES para mejorar la gestión de personas`,
+      legal:`Analiza el cumplimiento legal laboral.\nCONTEXTO:\n${ctx}\n\n1. OBLIGACIONES LEGALES que debe cumplir este negocio\n2. RIESGOS LEGALES identificados\n3. SITUACIÓN DE TRABAJADORES EXTRANJEROS si los hay (Ley 21.325, ratio 85/15, permisos)\n4. CHECKLIST de cumplimiento mínimo\n5. ACCIONES URGENTES si hay brechas`,
+      equipos:`Dame estrategias para mejorar el equipo.\nCONTEXTO:\n${ctx}\n\n1. ESTRUCTURA ÓPTIMA del equipo para este tipo y tamaño de negocio\n2. ESTRATEGIAS para reducir rotación\n3. PLAN DE CAPACITACIÓN recomendado\n4. INCENTIVOS Y BENEFICIOS que funcionan en gastronómia\n5. Cómo mejorar el clima laboral`,
+    };
+    try { await claude(sys,prompts[tipo]||prompts.diagnostico,t=>setOutput(t)); }
+    catch { setOutput("Error al conectar."); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      <ModTabs tabs={[{id:"datos",icon:"📝",label:"Datos"},{id:"diagnostico",icon:"👥",label:"Diagnóstico"},{id:"legal",icon:"⚖️",label:"Legal Laboral"},{id:"equipos",icon:"🌱",label:"Desarrollo"}]} active={subTab} onChange={setSubTab}/>
+      {subTab==="datos"&&(
+        <div className="card">
+          <SectionHeader icon="👥" title="Gestión de Personas"><Completeness data={data}/></SectionHeader>
+          <DataGrid fields={fields} data={data} onChange={set}/>
+        </div>
+      )}
+      {subTab!=="datos"&&(
+        <div className="card">
+          <SectionHeader icon="🤖" title={{diagnostico:"Diagnóstico RRHH",legal:"Cumplimiento Legal Laboral",equipos:"Desarrollo del Equipo"}[subTab]}>
+            <button className="btn-primary" onClick={()=>analyze(subTab)} disabled={loading}>
+              {loading?<><div className="spinner"/>Analizando...</>:<>Analizar</>}
+            </button>
+          </SectionHeader>
+          <AIBox text={output} loading={loading} placeholder="Ingresa los datos de RRHH y genera el análisis."/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MODULE: OPERACIONES ──────────────────────────────────────────────────────
+function ModuleOperaciones({ biz, local, updateBiz }) {
+  const data=biz.operaciones[local];
+  const set=(k,v)=>updateBiz("operaciones",local,k,v);
+  const [subTab,setSubTab]=useState("datos");
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+
+  const fields=[
+    {key:"capacidadMesas",label:"Capacidad (mesas)",type:"number",placeholder:"Ej: 15"},
+    {key:"clientesDia",label:"Clientes promedio/día",type:"number",placeholder:"Ej: 80"},
+    {key:"diasOperacion",label:"Días de operación",placeholder:"Ej: Martes a Domingo"},
+    {key:"tiempoServicio",label:"Tiempo promedio de servicio",placeholder:"Ej: 45 minutos por mesa"},
+    {key:"principalesProveedores",label:"Principales proveedores",placeholder:"Ej: Makro, proveedor de pisco, carnicería local",rows:2},
+    {key:"controlInventario",label:"Control de inventario",type:"select",options:["Sistema digital","Planilla Excel","Manual/visual","Sin control formal"]},
+    {key:"desperdicioEstimado",label:"Desperdicio estimado",type:"select",options:["Muy bajo (<5%)","Bajo (5-10%)","Moderado (10-20%)","Alto (>20%)","No mido"]},
+    {key:"tecnologiaUsada",label:"Tecnología / sistemas usados",placeholder:"Ej: POS propio, Mercado Pago, app delivery propia"},
+    {key:"quejasRecurrentes",label:"Quejas o problemas recurrentes",placeholder:"Ej: tiempos de espera, errores de pedidos",rows:2},
+    {key:"cuellosDeBottella",label:"Cuellos de botella identificados",placeholder:"Ej: cocina lenta en peak, falta de personal fin de semana",rows:2},
+    {key:"procesosDocumentados",label:"Procesos documentados",type:"select",options:["Sí, mayoría","Algunos","No, todo de memoria"]},
+  ];
+
+  const analyze = async (tipo) => {
+    setLoading(true); setOutput("");
+    const ctx=buildContext(biz,local);
+    const sys=`Eres experto en operaciones de negocios gastronómicos. Conoces gestión de cocina, logística de servicio, control de costos operativos y tecnología para restaurantes y bares. Siempre en español.`;
+    const prompts={
+      eficiencia:`Analiza la eficiencia operacional.\nCONTEXTO:\n${ctx}\n\n1. DIAGNÓSTICO OPERACIONAL: Puntos fuertes y débiles\n2. ÍNDICE DE OCUPACIÓN estimado vs capacidad máxima\n3. CUELLOS DE BOTELLA: Cómo resolverlos\n4. OPORTUNIDADES DE EFICIENCIA con menor inversión\n5. TECNOLOGÍA: ¿Qué herramientas deberían implementar?`,
+      proveedores:`Estrategia de proveedores y costos.\nCONTEXTO:\n${ctx}\n\n1. ANÁLISIS DE PROVEEDORES actuales\n2. ESTRATEGIAS para reducir el costo de insumos\n3. RECOMENDACIONES de proveedores o canales de compra\n4. GESTIÓN DE INVENTARIO: Método recomendado para este negocio\n5. Cómo reducir el desperdicio`,
+      procesos:`Plan de mejora de procesos.\nCONTEXTO:\n${ctx}\n\n1. PROCESOS CRÍTICOS que deben documentarse primero\n2. PLAN DE ESTANDARIZACIÓN paso a paso\n3. INDICADORES operacionales que deben medirse\n4. CHECKLIST DIARIO recomendado para apertura y cierre\n5. Cómo escalar sin perder calidad`,
+    };
+    try { await claude(sys,prompts[tipo]||prompts.eficiencia,t=>setOutput(t)); }
+    catch { setOutput("Error al conectar."); }
+    setLoading(false);
+  };
+
+  const ocupacion = data.clientesDia&&data.capacidadMesas ? Math.round(Number(data.clientesDia)/(Number(data.capacidadMesas)*2)*100) : null;
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      <ModTabs tabs={[{id:"datos",icon:"📝",label:"Datos"},{id:"eficiencia",icon:"⚡",label:"Eficiencia"},{id:"proveedores",icon:"🚚",label:"Proveedores"},{id:"procesos",icon:"🔄",label:"Procesos"}]} active={subTab} onChange={setSubTab}/>
+      {subTab==="datos"&&(
+        <>
+          {ocupacion!==null&&(
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>
+              <KpiCard icon="🪑" label="Mesas" value={data.capacidadMesas} sub="capacidad total"/>
+              <KpiCard icon="👤" label="Clientes/día" value={data.clientesDia} sub="promedio"/>
+              <KpiCard icon="📊" label="Ocupación estim." value={`${ocupacion}%`} color={ocupacion<40?C.danger:ocupacion<70?C.warning:C.success}/>
+            </div>
+          )}
+          <div className="card">
+            <SectionHeader icon="⚙️" title="Datos Operacionales"><Completeness data={data}/></SectionHeader>
+            <DataGrid fields={fields} data={data} onChange={set}/>
+          </div>
+        </>
+      )}
+      {subTab!=="datos"&&(
+        <div className="card">
+          <SectionHeader icon="🤖" title={{eficiencia:"Análisis de Eficiencia",proveedores:"Gestión de Proveedores",procesos:"Mejora de Procesos"}[subTab]}>
+            <button className="btn-primary" onClick={()=>analyze(subTab)} disabled={loading}>
+              {loading?<><div className="spinner"/>Analizando...</>:<>Analizar</>}
+            </button>
+          </SectionHeader>
+          <AIBox text={output} loading={loading} placeholder="Ingresa los datos operacionales y genera el análisis."/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MODULE: LEGAL ────────────────────────────────────────────────────────────
+function ModuleLegal({ biz, local, updateBiz }) {
+  const data=biz.legal[local];
+  const set=(k,v)=>updateBiz("legal",local,k,v);
+  const [subTab,setSubTab]=useState("datos");
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+
+  const fields=[
+    {key:"patenteComercial",label:"Patente comercial",type:"select",options:["Vigente y al día","Vigente con observaciones","Vencida","En trámite","Sin patente"]},
+    {key:"permisosMunicipales",label:"Permisos municipales",placeholder:"Ej: DG aprobada, permiso terraza pendiente"},
+    {key:"licenciaAlcohol",label:"Licencia de alcohol",type:"select",options:["Vigente","Vigente con infracciones","En renovación","Vencida","Sin licencia"]},
+    {key:"situacionTributaria",label:"Situación tributaria",type:"select",options:["Al día","Con cuotas morosas","Con deuda SII","En proceso de regularización"]},
+    {key:"multasPendientes",label:"Multas o notificaciones pendientes",placeholder:"Ej: Notificación N°1726 JPL Curicó, infracción señalética",rows:2},
+    {key:"vencimientosCercanos",label:"Vencimientos próximos",placeholder:"Ej: Renovación patente diciembre, revisión sanitaria marzo",rows:2},
+    {key:"reclamosVecinos",label:"Reclamos o situaciones con vecinos",placeholder:"Ej: reclamos por ruido, inspecciones frecuentes"},
+    {key:"representanteLegal",label:"Representante legal",placeholder:"Ej: Gabriela Arancibia Fuenzalida"},
+    {key:"contadorExterno",label:"Asesoría contable/legal",placeholder:"Ej: Estudio Contable X, abogado Y"},
+    {key:"observaciones",label:"Otras observaciones legales",placeholder:"Situaciones especiales, procesos en curso…",rows:2,full:true},
+  ];
+
+  const analyze = async (tipo) => {
+    setLoading(true); setOutput("");
+    const ctx=buildContext(biz,local);
+    const sys=`Eres asesor legal especializado en negocios gastronómicos chilenos. Conoces la Ley 19.925 (alcohol), normativa municipal, SII, derecho laboral, y el funcionamiento del sistema judicial chileno para pequeñas empresas. Siempre en español. Aclaras que eres asesor IA y que las decisiones legales requieren un abogado.`;
+    const prompts={
+      diagnostico:`Diagnostica la situación legal y regulatoria.\nCONTEXTO:\n${ctx}\n\n1. SEMÁFORO LEGAL: Verde/Amarillo/Rojo\n2. RIESGOS CRÍTICOS identificados (multas, clausuras, sanciones posibles)\n3. OBLIGACIONES PENDIENTES ordenadas por urgencia\n4. CHECKLIST LEGAL básico para este tipo de negocio en Chile\n5. RECOMENDACIONES INMEDIATAS`,
+      multas:`Estrategia para manejar multas y notificaciones.\nCONTEXTO:\n${ctx}\n\n1. ANÁLISIS DE CADA SITUACIÓN identificada\n2. OPCIONES DE RESPUESTA para cada caso\n3. DOCUMENTACIÓN necesaria\n4. PLAZOS Y CONSECUENCIAS de no actuar\n5. CÓMO PREPARAR LAS DESCARGOS más efectivos`,
+      permisos:`Plan de regularización de permisos.\nCONTEXTO:\n${ctx}\n\n1. PERMISOS PRIORITARIOS a regularizar\n2. PROCESO Y REQUISITOS para cada trámite en Chile\n3. COSTOS ESTIMADOS de regularización\n4. CRONOGRAMA RECOMENDADO\n5. CÓMO EVITAR SANCIONES mientras se tramita`,
+    };
+    try { await claude(sys,prompts[tipo]||prompts.diagnostico,t=>setOutput(t)); }
+    catch { setOutput("Error al conectar."); }
+    setLoading(false);
+  };
+
+  const hasAlerts = data.multasPendientes||data.licenciaAlcohol==="Vencida"||data.patenteComercial==="Vencida"||data.situacionTributaria==="Con deuda SII";
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      {hasAlerts&&(
+        <div className="alert alert-danger">
+          <span style={{fontSize:16}}>⚠️</span>
+          <div><strong>Alertas legales detectadas.</strong> Hay situaciones que requieren atención. Usa el módulo de Análisis para obtener orientación.</div>
+        </div>
+      )}
+      <ModTabs tabs={[{id:"datos",icon:"📝",label:"Datos"},{id:"diagnostico",icon:"⚖️",label:"Diagnóstico"},{id:"multas",icon:"🔔",label:"Multas/Notif."},{id:"permisos",icon:"📋",label:"Permisos"}]} active={subTab} onChange={setSubTab}/>
+      {subTab==="datos"&&(
+        <div className="card">
+          <SectionHeader icon="⚖️" title="Situación Legal y Regulatoria"><Completeness data={data}/></SectionHeader>
+          <DataGrid fields={fields} data={data} onChange={set}/>
+        </div>
+      )}
+      {subTab!=="datos"&&(
+        <div className="card">
+          <SectionHeader icon="🤖" title={{diagnostico:"Diagnóstico Legal",multas:"Gestión de Multas y Notificaciones",permisos:"Plan de Regularización"}[subTab]}>
+            <button className="btn-primary" onClick={()=>analyze(subTab)} disabled={loading}>
+              {loading?<><div className="spinner"/>Analizando...</>:<>Analizar</>}
+            </button>
+          </SectionHeader>
+          <p style={{fontSize:11,color:C.muted,marginBottom:12}}>⚠️ Esta es orientación informativa. Consulta siempre con un abogado para decisiones legales.</p>
+          <AIBox text={output} loading={loading} placeholder="Ingresa la situación legal y genera el análisis."/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MODULE: ESTRATEGIA ───────────────────────────────────────────────────────
+function ModuleEstrategia({ biz, local, updateBiz }) {
+  const data=biz.estrategia[local];
+  const set=(k,v)=>updateBiz("estrategia",local,k,v);
+  const [subTab,setSubTab]=useState("datos");
+  const [output,setOutput]=useState(""); const [loading,setLoading]=useState(false);
+
+  const fields=[
+    {key:"vision",label:"Visión (¿dónde quiero llegar?)",placeholder:"Ej: Ser el bar de referencia del Maule en 3 años",rows:2,full:true},
+    {key:"mision",label:"Misión (¿para qué existo?)",placeholder:"Ej: Ofrecer una experiencia gastronómica única que fusione culturas",rows:2,full:true},
+    {key:"objetivosAnio",label:"Objetivos este año",placeholder:"Ej: +30% ventas, abrir terraza, lanzar delivery propio",rows:2,full:true},
+    {key:"principalDesafio",label:"Principal desafío actual",placeholder:"Ej: Falta de flujo entre semana, alta rotación de personal",rows:2},
+    {key:"oportunidadVista",label:"Oportunidad que ves",placeholder:"Ej: Turismo en verano, nicho de cocina peruana sin competencia real",rows:2},
+    {key:"competidores",label:"Competidores principales",placeholder:"Ej: Novu, Mamba (Almíbar) / Pisco Lima, El Peruanito (Pangoa)"},
+    {key:"posicionamiento",label:"Posicionamiento deseado",placeholder:"Ej: El bar premium de Curicó, la cocina peruana más auténtica del Maule"},
+    {key:"inversionesPlaneadas",label:"Inversiones planeadas",placeholder:"Ej: Renovar barra, comprar equipos, contratar chef"},
+    {key:"planesExpansion",label:"Planes de expansión",placeholder:"Ej: Segunda sucursal, delivery en toda la región, dark kitchen"},
+    {key:"kpisDeseados",label:"KPIs que quiero alcanzar",placeholder:"Ej: 80% ocupación fin de semana, ticket $15k, NPS 8+"},
+  ];
+
+  const analyze = async (tipo) => {
+    setLoading(true); setOutput("");
+    const ctx=buildContext(biz,local);
+    const sys=`Eres consultor de estrategia empresarial especializado en el sector gastronómico chileno. Combinas análisis estratégico riguroso con visión práctica para negocios del mundo real. Siempre en español.`;
+    const prompts={
+      foda:`Genera un análisis FODA completo.\nCONTEXTO COMPLETO:\n${ctx}\n\nGenera:\n1. FORTALEZAS internas reales (basadas en los datos)\n2. DEBILIDADES internas honestas\n3. OPORTUNIDADES del entorno (mercado de ${biz.locales[local].ciudad||"la ciudad"})\n4. AMENAZAS del entorno\n5. ESTRATEGIAS FO, FA, DO, DA (1-2 por cuadrante)\n6. PRIORIDAD ESTRATÉGICA: La iniciativa de mayor impacto`,
+      okrs:`Define OKRs para los próximos 3 meses.\nCONTEXTO:\n${ctx}\n\nGenera 3-4 OKRs con:\n- Objective (resultado cualitativo ambicioso)\n- 2-3 Key Results medibles por objetivo\n- Initiative principal para alcanzar cada KR\nHazlos específicos y alcanzables para este negocio.`,
+      plan:`Crea un plan de acción ejecutivo.\nCONTEXTO:\n${ctx}\n\n1. ROADMAP 90 DÍAS: Qué hacer mes 1, mes 2, mes 3\n2. DECISIONES CRÍTICAS que no pueden postergarse\n3. RECURSOS NECESARIOS (personas, dinero, tiempo)\n4. RIESGOS del plan y cómo mitigarlos\n5. MÉTRICAS DE ÉXITO: Cómo saber si vamos bien`,
+    };
+    try { await claude(sys,prompts[tipo]||prompts.foda,t=>setOutput(t)); }
+    catch { setOutput("Error al conectar."); }
+    setLoading(false);
+  };
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      <ModTabs tabs={[{id:"datos",icon:"📝",label:"Datos"},{id:"foda",icon:"🔲",label:"FODA"},{id:"okrs",icon:"🎯",label:"OKRs"},{id:"plan",icon:"🗺️",label:"Plan 90 días"}]} active={subTab} onChange={setSubTab}/>
+      {subTab==="datos"&&(
+        <div className="card">
+          <SectionHeader icon="🧭" title="Estrategia y Visión"><Completeness data={data}/></SectionHeader>
+          <DataGrid fields={fields} data={data} onChange={set}/>
+        </div>
+      )}
+      {subTab!=="datos"&&(
+        <div className="card">
+          <SectionHeader icon="🤖" title={{foda:"Análisis FODA",okrs:"OKRs Trimestrales",plan:"Plan de Acción 90 Días"}[subTab]}>
+            <button className="btn-primary" onClick={()=>analyze(subTab)} disabled={loading}>
+              {loading?<><div className="spinner"/>Generando...</>:<>Generar con IA</>}
+            </button>
+          </SectionHeader>
+          <AIBox text={output} loading={loading} placeholder="Completa los datos estratégicos y genera el análisis."/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MODULE: CONSULTOR ────────────────────────────────────────────────────────
+function ModuleConsultor({ biz, local }) {
+  const [messages,setMessages]=useState([]);
+  const [input,setInput]=useState(""); const [loading,setLoading]=useState(false);
+  const bottomRef=useRef(null);
+  const localName=local==="almibar"?"Almíbar (Bar, Curicó)":"Pangoa (Restaurante Peruano, Talca)";
+
+  useEffect(()=>{
+    setMessages([{role:"assistant",text:`Hola Hector 👋 Soy tu consultor ejecutivo de ${localName}. Tengo acceso a todos los datos que has ingresado del negocio. Puedo ayudarte con cualquier área: finanzas, personas, operaciones, marketing, legal o estrategia. ¿Qué necesitas?`}]);
+    setInput("");
+  },[local]);
+
+  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[messages]);
+
+  const send = async () => {
+    if(!input.trim()||loading) return;
+    const msg=input.trim(); setInput("");
+    setMessages(p=>[...p,{role:"user",text:msg}]);
+    setLoading(true);
+    const ctx=buildContext(biz,local);
+    const sys=`Eres el consultor ejecutivo de confianza de Hector Maluenda, dueño de ${localName}.
+Tienes acceso completo al contexto del negocio:\n${ctx}\n\nEres directo, práctico y hablas en español chileno. Tratas a Hector de "tú". Das respuestas accionables basadas en los datos reales del negocio. Cubres todas las áreas: CEO, marketing, finanzas, RRHH, operaciones, legal y estrategia.`;
+    let aiText="";
+    setMessages(p=>[...p,{role:"assistant",text:"",streaming:true}]);
+    try {
+      await claude(sys,msg,t=>{
+        aiText=t;
+        setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:t,streaming:true}; return u; });
+      });
+    } catch { aiText="Error al conectar. Intenta nuevamente."; }
+    setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:aiText,streaming:false}; return u; });
+    setLoading(false);
+  };
+
+  const suggestions=[
+    "Dame el diagnóstico general del negocio","¿Cuál es mi mayor riesgo hoy?",
+    "¿Qué debo hacer primero esta semana?","Ayúdame a mejorar la rentabilidad",
+    "¿Cómo gestiono mejor a mi equipo?","Analiza si mis precios son correctos",
+  ];
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",height:"calc(100vh - 200px)",minHeight:500,gap:16}}>
+      <div style={{background:C.blueDim,border:`1px solid #C0CFEE`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:20}}>🤖</span>
+        <div>
+          <div style={{fontSize:13,fontWeight:700,color:C.blue}}>Consultor Ejecutivo IA</div>
+          <div style={{fontSize:11,color:C.muted}}>Accede a todos los datos del negocio · Responde sobre cualquier área</div>
+        </div>
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10}}>
+        {messages.map((m,i)=>(
+          <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
+            {m.role==="assistant"&&<span style={{fontSize:20,marginRight:8,flexShrink:0,alignSelf:"flex-end",marginBottom:2}}>🤖</span>}
+            <div className={m.role==="user"?"chat-bubble-user":"chat-bubble-ai"}>
+              {m.text}
+              {m.streaming&&m.text&&<span style={{color:C.blueLight}}>▋</span>}
+              {m.streaming&&!m.text&&<div className="spinner" style={{display:"inline-block",width:13,height:13}}/>}
+            </div>
+          </div>
+        ))}
+        <div ref={bottomRef}/>
+      </div>
+
+      {messages.length<=1&&(
+        <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+          {suggestions.map((s,i)=><button key={i} className="btn-ghost btn-sm" style={{fontSize:12}} onClick={()=>setInput(s)}>{s}</button>)}
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:10}}>
+        <textarea className="input" rows={2} placeholder="Pregunta sobre cualquier aspecto del negocio..."
+          value={input} onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
+          style={{flex:1,resize:"none"}}/>
+        <button className="btn-primary" onClick={send} disabled={loading||!input.trim()} style={{alignSelf:"flex-end"}}>
+          {loading?<div className="spinner"/>:"→"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── NAVIGATION CONFIG ────────────────────────────────────────────────────────
+
+// ─── MODULE: IMPORTAR ────────────────────────────────────────────────────────
+function ModuleImportar({ biz, local, updateBiz, onNavigate }) {
+  const [stage, setStage] = useState("upload");
+  const [file, setFile] = useState(null);
+  const [error, setError] = useState("");
+  const [analysis, setAnalysis] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [applied, setApplied] = useState([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef(null);
+
+  const parseExcel = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const XLSX = window.XLSX;
+        if (!XLSX) { resolve("(Excel disponible — SheetJS no cargado en este entorno)"); return; }
+        const wb = XLSX.read(e.target.result, { type:"array" });
+        let text = "";
+        wb.SheetNames.forEach(name => {
+          const ws = wb.Sheets[name];
+          const csv = XLSX.utils.sheet_to_csv(ws, { blankrows:false });
+          if (csv.replace(/,/g,"").trim()) text += `\n=== HOJA: ${name} ===\n${csv}\n`;
+        });
+        resolve(text.slice(0, 14000));
+      } catch(e2) { reject(e2); }
+    };
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(file);
+  });
+
+  const parsePDF = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const extractWithText = async (text, fname) => {
+    const localName = local==="almibar" ? "Almíbar (Bar, Curicó)" : "Pangoa (Restaurante Peruano, Talca)";
+    const sys = `Eres un asistente que extrae datos de reportes POS/Fudo para un ERP gastronómico. Devuelves SOLO JSON válido sin markdown ni texto adicional.`;
+    const prompt = `Analiza este reporte del sistema Fudo para "${localName}". Archivo: ${fname}\n\nDATOS:\n${text}\n\nDevuelve SOLO este JSON (sin markdown, sin texto extra). Si un campo no está en el reporte ponlo null:\n{"resumen":"","periodo":"","finanzas":{"ventasMensual":null,"ventasPromDia":null,"ticketPromedio":null,"costoVentas":null,"margenEstimado":null,"principalIngreso":null,"mesesCriticos":null},"operaciones":{"capacidadMesas":null,"clientesDia":null,"diasOperacion":null,"tiempoServicio":null,"principalesProveedores":null,"desperdicioEstimado":null},"rrhh":{"cantEmpleados":null,"cargos":null},"hallazgos":[],"alertas":[],"recomendaciones":[]}`;
+    let result = "";
+    await claude(sys, prompt, t => { result = t; });
+    return result;
+  };
+
+  const extractWithPDF = async (b64, fname) => {
+    const localName = local==="almibar" ? "Almíbar (Bar, Curicó)" : "Pangoa (Restaurante Peruano, Talca)";
+    const key = window.__ALMA_KEY__;
+    if (!key) throw new Error("API key no configurada");
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":key,"anthropic-version":"2023-06-01"},
+      body: JSON.stringify({
+        model:"claude-sonnet-4-20250514", max_tokens:1800,
+        system:`Extraes datos de reportes POS para un ERP gastronómico. Devuelves SOLO JSON válido.`,
+        messages:[{ role:"user", content:[
+          { type:"document", source:{ type:"base64", media_type:"application/pdf", data:b64 }},
+          { type:"text", text:`Analiza este reporte de Fudo para "${localName}" (${fname}). Devuelve SOLO JSON sin markdown:\n{"resumen":"","periodo":"","finanzas":{"ventasMensual":null,"ventasPromDia":null,"ticketPromedio":null,"costoVentas":null,"margenEstimado":null,"principalIngreso":null,"mesesCriticos":null},"operaciones":{"capacidadMesas":null,"clientesDia":null,"diasOperacion":null,"tiempoServicio":null,"principalesProveedores":null,"desperdicioEstimado":null},"rrhh":{"cantEmpleados":null,"cargos":null},"hallazgos":[],"alertas":[],"recomendaciones":[]}`}
+        ]}]
+      })
+    });
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const data = await res.json();
+    return data.content?.map(b => b.text||"").join("") || "";
+  };
+
+  const parseJSON = (text) => {
+    try {
+      const clean = text.replace(/```json|```/g,"").trim();
+      const s = clean.indexOf("{"); const e2 = clean.lastIndexOf("}");
+      if (s===-1) return null;
+      return JSON.parse(clean.slice(s, e2+1));
+    } catch { return null; }
+  };
+
+  const handleFile = async (f) => {
+    if (!f) return;
+    setError("");
+    const ext = f.name.split(".").pop().toLowerCase();
+    if (!["xlsx","xls","csv","pdf"].includes(ext)) {
+      setError("Formato no soportado. Usa Excel (.xlsx, .xls, .csv) o PDF."); return;
+    }
+    setFile(f); setStage("analyzing"); setLoading(true); setAnalysis(null); setApplied([]);
+    try {
+      let raw = "";
+      if (ext==="pdf") { raw = await extractWithPDF(await parsePDF(f), f.name); }
+      else { raw = await extractWithText(await parseExcel(f), f.name); }
+      const parsed = parseJSON(raw);
+      setAnalysis(parsed || { resumen:"No se pudo extraer datos estructurados. Revisa el formato del archivo.", hallazgos:[], alertas:[], recomendaciones:[], finanzas:{}, operaciones:{}, rrhh:{} });
+      setStage("review");
+    } catch(e2) {
+      setError("Error al procesar: " + e2.message); setStage("upload");
+    }
+    setLoading(false);
+  };
+
+  const applyField = (area, key, val) => {
+    if (val===null||val===undefined||String(val).trim()==="") return;
+    updateBiz(area, local, key, String(val));
+    setApplied(p => [...new Set([...p, `${area}.${key}`])]);
+  };
+
+  const applyAll = () => {
+    if (!analysis) return;
+    ["finanzas","operaciones","rrhh"].forEach(area => {
+      if (analysis[area]) Object.entries(analysis[area]).forEach(([k,v]) => applyField(area,k,v));
+    });
+    setStage("done");
+  };
+
+  const reset = () => { setStage("upload"); setFile(null); setError(""); setAnalysis(null); setApplied([]); };
+
+  const FLABELS = {
+    finanzas:{ ventasMensual:"Ventas mensuales",ventasPromDia:"Ventas prom/día",ticketPromedio:"Ticket promedio",costoVentas:"Costo ventas %",margenEstimado:"Margen %",principalIngreso:"Principal ingreso",mesesCriticos:"Meses críticos"},
+    operaciones:{ capacidadMesas:"Mesas",clientesDia:"Clientes/día",diasOperacion:"Días operación",tiempoServicio:"T° servicio",principalesProveedores:"Proveedores",desperdicioEstimado:"Desperdicio"},
+    rrhh:{ cantEmpleados:"N° empleados",cargos:"Cargos"},
+  };
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+
+      <div style={{background:C.blueDim,border:`1px solid #C0CFEE`,borderRadius:12,padding:"16px 20px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:10}}>
+          <span style={{fontSize:24}}>📥</span>
+          <div>
+            <div style={{fontSize:15,fontWeight:700,color:C.blue}}>Importar desde Fudo</div>
+            <div style={{fontSize:12,color:C.muted}}>Sube un reporte exportado de Fudo — la IA extrae y aplica los datos automáticamente al ERP</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {["Reporte de ventas","Cierre de caja","Reporte de productos","Reporte de turnos","Cualquier export de Fudo"].map((t,i) => (
+            <span key={i} className="tag tag-blue" style={{fontSize:10}}>✓ {t}</span>
+          ))}
+        </div>
+      </div>
+
+      {stage==="upload" && (
+        <>
+          <div
+            className="card"
+            onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+            onDragLeave={()=>setDragOver(false)}
+            onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files[0];if(f)handleFile(f);}}
+            onClick={()=>fileRef.current?.click()}
+            style={{border:`2px dashed ${dragOver?C.blueLight:C.border}`,background:dragOver?C.blueDim:C.surface,transition:"all .2s",cursor:"pointer",textAlign:"center",padding:"44px 20px"}}
+          >
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.pdf" style={{display:"none"}} onChange={e=>handleFile(e.target.files[0])}/>
+            <div style={{fontSize:44,marginBottom:12}}>📂</div>
+            <div style={{fontSize:16,fontWeight:700,color:C.text,marginBottom:6}}>Arrastra tu archivo aquí</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:16}}>o haz clic para seleccionar</div>
+            <div style={{display:"flex",justifyContent:"center",gap:10}}>
+              <span className="tag tag-green">📊 Excel (.xlsx, .xls, .csv)</span>
+              <span className="tag tag-blue">📄 PDF</span>
+            </div>
+          </div>
+          {error&&<div className="alert alert-danger">⚠️ {error}</div>}
+
+          <div className="card">
+            <SectionHeader icon="📖" title="¿Cómo exportar desde Fudo?"/>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              {[
+                ["📊 Reporte de Ventas","Fudo → Reportes → Ventas → Exportar Excel/PDF"],
+                ["🧾 Cierre de Caja","Fudo → Caja → Cierre → Imprimir / Exportar"],
+                ["📦 Reporte de Productos","Fudo → Productos → Movimientos → Exportar"],
+                ["👤 Reporte de Turnos","Fudo → Personal → Turnos → Exportar Excel"],
+              ].map(([t,d])=>(
+                <div key={t} style={{padding:"12px 14px",background:C.bg,borderRadius:8,border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:13,fontWeight:700,color:C.text,marginBottom:4}}>{t}</div>
+                  <div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>{d}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {stage==="analyzing" && (
+        <div className="card" style={{textAlign:"center",padding:"48px 20px"}}>
+          <div style={{display:"flex",justifyContent:"center",marginBottom:16}}>
+            <div className="spinner" style={{width:36,height:36,borderWidth:3}}/>
+          </div>
+          <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:6}}>Analizando {file?.name}</div>
+          <div style={{fontSize:13,color:C.muted}}>La IA está leyendo el reporte y extrayendo los datos...</div>
+        </div>
+      )}
+
+      {stage==="review" && analysis && (
+        <>
+          <div className="card">
+            <SectionHeader icon="📋" title={file?.name||"Reporte"}>
+              <span className="tag tag-green">✓ Analizado</span>
+            </SectionHeader>
+            {analysis.resumen&&<div style={{background:C.bg,borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:13,color:C.text}}><strong>📝 </strong>{analysis.resumen}</div>}
+            {analysis.periodo&&<div style={{fontSize:12,color:C.muted,marginBottom:12}}>📅 Período: {analysis.periodo}</div>}
+            {analysis.alertas?.length>0&&<div className="alert alert-warn" style={{marginBottom:8}}><span>⚠️</span><div><strong>Alertas:</strong> {analysis.alertas.join(" · ")}</div></div>}
+            {analysis.hallazgos?.length>0&&<div className="alert alert-info" style={{marginBottom:8}}><span>💡</span><div><strong>Hallazgos:</strong> {analysis.hallazgos.join(" · ")}</div></div>}
+            {analysis.recomendaciones?.length>0&&<div className="alert alert-success"><span>🎯</span><div><strong>Recomendaciones:</strong> {analysis.recomendaciones.join(" · ")}</div></div>}
+          </div>
+
+          <div className="card">
+            <SectionHeader icon="🔍" title="Campos Extraídos — Revisa antes de aplicar">
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn-ghost btn-sm" onClick={reset}>Cancelar</button>
+                <button className="btn-primary btn-sm" onClick={applyAll}>✓ Aplicar Todo al ERP</button>
+              </div>
+            </SectionHeader>
+            {["finanzas","operaciones","rrhh"].map(area=>{
+              const d=analysis[area]; if(!d) return null;
+              const filled=Object.entries(d).filter(([,v])=>v!==null&&v!==undefined&&String(v).trim()!=="");
+              if(!filled.length) return null;
+              return (
+                <div key={area} style={{marginBottom:16}}>
+                  <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".08em",marginBottom:8,paddingBottom:6,borderBottom:`1px solid ${C.border}`}}>
+                    {{finanzas:"💰 Finanzas",operaciones:"⚙️ Operaciones",rrhh:"👥 RRHH"}[area]}
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                    {filled.map(([k,v])=>{
+                      const done=applied.includes(`${area}.${k}`);
+                      return (
+                        <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:done?C.successBg:C.bg,border:`1px solid ${done?"#A0D8B8":C.border}`,borderRadius:8,gap:8}}>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:".05em"}}>{FLABELS[area]?.[k]||k}</div>
+                            <div style={{fontSize:13,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{String(v)}</div>
+                          </div>
+                          {done
+                            ? <span style={{fontSize:16,color:C.success}}>✓</span>
+                            : <button className="btn-ghost btn-sm" style={{fontSize:11,padding:"3px 10px",flexShrink:0}} onClick={()=>applyField(area,k,v)}>Aplicar</button>
+                          }
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            {Object.values(["finanzas","operaciones","rrhh"].reduce((acc,a)=>({...acc,...(analysis[a]||{})}),{})).filter(v=>v!==null&&v!==undefined&&String(v).trim()!=="").length===0&&(
+              <div style={{textAlign:"center",padding:"20px",color:C.muted,fontSize:13}}>No se encontraron campos con datos extraíbles en este reporte. Prueba con un reporte de ventas o cierre de caja.</div>
+            )}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+              <span style={{fontSize:12,color:C.muted}}>{applied.length} campos aplicados</span>
+              <div style={{display:"flex",gap:8}}>
+                <button className="btn-ghost btn-sm" onClick={reset}>Subir otro archivo</button>
+                <button className="btn-primary" onClick={applyAll}>✓ Aplicar Todo</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {stage==="done" && (
+        <div className="card" style={{textAlign:"center",padding:"48px 20px"}}>
+          <div style={{fontSize:52,marginBottom:14}}>✅</div>
+          <div style={{fontSize:16,fontWeight:700,color:C.success,marginBottom:6}}>{applied.length} campos aplicados al ERP</div>
+          <div style={{fontSize:13,color:C.muted,marginBottom:24}}>Los datos de {file?.name} ya están disponibles para todos los análisis de IA</div>
+          <div style={{display:"flex",justifyContent:"center",gap:12}}>
+            <button className="btn-ghost" onClick={reset}>📥 Importar otro archivo</button>
+            <button className="btn-primary" onClick={()=>onNavigate("ceo")}>📊 Ver Dashboard CEO</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const NAV = [
+  { group:"Dirección", items:[
+    {id:"ceo",icon:"📊",label:"Dashboard CEO"},
+    {id:"estrategia",icon:"🧭",label:"Estrategia"},
+  ]},
+  { group:"Negocio", items:[
+    {id:"local",icon:"🏪",label:"Mi Local"},
+    {id:"marketing",icon:"📣",label:"Marketing"},
+    {id:"finanzas",icon:"💰",label:"Finanzas"},
+  ]},
+  { group:"Organización", items:[
+    {id:"rrhh",icon:"👥",label:"RRHH"},
+    {id:"operaciones",icon:"⚙️",label:"Operaciones"},
+    {id:"legal",icon:"⚖️",label:"Legal"},
+  ]},
+  { group:"Datos", items:[
+    {id:"importar",icon:"📥",label:"Importar Fudo"},
+  ]},
+  { group:"IA", items:[
+    {id:"consultor",icon:"🤖",label:"Consultor IA"},
+  ]},
+];
+
+const MODULE_COMPONENTS = {
+  ceo:ModuleCEO, local:ModuleLocal, marketing:ModuleMarketing,
+  finanzas:ModuleFinanzas, rrhh:ModuleRRHH, operaciones:ModuleOperaciones,
+  legal:ModuleLegal, estrategia:ModuleEstrategia, consultor:ModuleConsultor,
+  importar:ModuleImportar,
+};
+const MODULE_LABELS = {
+  ceo:"Dashboard CEO",local:"Mi Local",marketing:"Marketing",finanzas:"Finanzas",
+  rrhh:"RRHH",operaciones:"Operaciones",legal:"Legal",estrategia:"Estrategia",consultor:"Consultor IA",importar:"Importar Fudo"
+};
+const MODULE_ICONS = {
+  ceo:"📊",local:"🏪",marketing:"📣",finanzas:"💰",
+  rrhh:"👥",operaciones:"⚙️",legal:"⚖️",estrategia:"🧭",consultor:"🤖",importar:"📥"
+};
+
+// ─── APP ──────────────────────────────────────────────────────────────────────
+function App() {
+  const [local,setLocal]=useState("almibar");
+  const [module,setModule]=useState("ceo");
+  const [biz,setBiz]=useState(INITIAL_BIZ);
+  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("alma_api_key")||"");
+  const [showKeyInput,setShowKeyInput]=useState(()=>!localStorage.getItem("alma_api_key"));
+
+  // Load SheetJS for Excel parsing
+  useEffect(()=>{
+    if (!window.XLSX) {
+      const s=document.createElement("script");
+      s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+      document.head.appendChild(s);
+    }
+  },[]);
+
+  const updateBiz = useCallback((area,localId,key,value)=>{
+    setBiz(p=>({ ...p, [area]:{ ...p[area], [localId]:{ ...p[area][localId], [key]:value } } }));
+  },[]);
+
+  const ActiveComp = MODULE_COMPONENTS[module];
+  const onNavigate = (mod) => setModule(mod);
+  const localName = local==="almibar"?"Almíbar":"Pangoa";
+  const localSub  = local==="almibar"?"Bar · Curicó":"Restaurante · Talca";
+
+  // Alert count
+  const legalData=biz.legal[local];
+  const alerts=[legalData.multasPendientes,legalData.licenciaAlcohol==="Vencida",legalData.patenteComercial==="Vencida",legalData.situacionTributaria==="Con deuda SII"].filter(Boolean).length;
+
+  const totalCompleteness = ["locales","finanzas","rrhh","operaciones","legal","estrategia"].reduce((acc,k)=>acc+countFilled(biz[k][local]),0);
+  const totalFields2 = ["locales","finanzas","rrhh","operaciones","legal","estrategia"].reduce((acc,k)=>acc+totalFields(biz[k][local]),0);
+  const completePct = totalFields2>0?Math.round(totalCompleteness/totalFields2*100):0;
+
+  return (
+    <>
+      <style>{css}</style>
+      <div style={{display:"flex",minHeight:"100vh",background:C.bg}}>
+
+        {/* SIDEBAR */}
+        <div style={{width:220,flexShrink:0,background:C.sidebar,display:"flex",flexDirection:"column",padding:"0 8px 16px"}}>
+          {/* Logo */}
+          <div style={{padding:"20px 12px 16px"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"rgba(255,255,255,.35)",letterSpacing:".14em",textTransform:"uppercase",marginBottom:4}}>ERP · IA</div>
+            <div style={{fontSize:17,fontWeight:700,color:"#fff",fontFamily:"'Lora',serif",fontStyle:"italic"}}>Inversiones Alma</div>
+            <div style={{fontSize:10,color:"rgba(255,255,255,.35)",marginTop:1}}>SpA · Panel de Gestión</div>
+          </div>
+
+          {/* Local switcher */}
+          <div style={{padding:"0 4px",marginBottom:8}}>
+            <div style={{fontSize:9,fontWeight:700,color:"rgba(255,255,255,.3)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:6,paddingLeft:8}}>Local</div>
+            <button className={`local-btn ${local==="almibar"?"active":""}`} onClick={()=>setLocal("almibar")}>
+              <span>🍸</span><div><div style={{fontWeight:600}}>Almíbar</div><div style={{fontSize:10,opacity:.6}}>Bar · Curicó</div></div>
+            </button>
+            <button className={`local-btn ${local==="pangoa"?"active":""}`} onClick={()=>setLocal("pangoa")} style={{marginTop:4}}>
+              <span>🇵🇪</span><div><div style={{fontWeight:600}}>Pangoa</div><div style={{fontSize:10,opacity:.6}}>Restaurante · Talca</div></div>
+            </button>
+            {/* completeness */}
+            <div style={{padding:"8px 8px 0"}}>
+              <div style={{height:3,background:"rgba(255,255,255,.1)",borderRadius:2,overflow:"hidden"}}>
+                <div style={{height:"100%",background:C.sidebarActive,width:`${completePct}%`,borderRadius:2,transition:"width .5s"}}/>
+              </div>
+              <div style={{fontSize:9,color:"rgba(255,255,255,.3)",marginTop:4}}>{completePct}% de datos completados</div>
+            </div>
+          </div>
+
+          <div style={{height:1,background:"rgba(255,255,255,.08)",margin:"8px 4px"}}/>
+
+          {/* Navigation */}
+          <nav style={{flex:1,overflowY:"auto"}}>
+            {NAV.map(group=>(
+              <div key={group.group}>
+                <div className="nav-group-label">{group.group}</div>
+                {group.items.map(item=>(
+                  <button key={item.id} className={`nav-item ${module===item.id?"active":""}`} onClick={()=>setModule(item.id)}>
+                    <span style={{fontSize:14,flexShrink:0}}>{item.icon}</span>
+                    <span>{item.label}</span>
+                    {item.id==="legal"&&alerts>0&&<span style={{marginLeft:"auto",background:"#D84040",color:"#fff",fontSize:9,fontWeight:700,padding:"2px 6px",borderRadius:10}}>{alerts}</span>}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+
+          <div style={{padding:"12px 8px 0",borderTop:"1px solid rgba(255,255,255,.08)",marginTop:8}}>
+            <div style={{fontSize:9,color:"rgba(255,255,255,.25)",lineHeight:1.8}}>
+              <div>Inversiones Alma SpA</div>
+              <div>Almíbar · Pangoa</div>
+            </div>
+          </div>
+        </div>
+
+        {/* MAIN */}
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
+          {/* Header */}
+          {/* API KEY BANNER */}
+          {(!apiKey || showKeyInput) && (
+            <div style={{background:"#FFF7ED",borderBottom:"1px solid #F0D090",padding:"10px 28px",display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
+              <span style={{fontSize:16}}>🔑</span>
+              <span style={{fontSize:13,color:"#A05A08",fontWeight:600}}>API Key de Anthropic requerida</span>
+              <input
+                type="password"
+                placeholder="sk-ant-api03-..."
+                defaultValue={apiKey}
+                onBlur={e=>{const v=e.target.value.trim();if(v){setApiKey(v);setShowKeyInput(false);}}}
+                onKeyDown={e=>{if(e.key==="Enter"){const v=e.target.value.trim();if(v){setApiKey(v);setShowKeyInput(false);}}}}
+                style={{flex:1,maxWidth:420,padding:"6px 12px",borderRadius:6,border:"1px solid #F0C080",fontFamily:"monospace",fontSize:13,outline:"none",background:"#fff"}}
+                autoFocus
+              />
+              <span style={{fontSize:11,color:"#A05A08"}}>Se guarda localmente en tu navegador</span>
+            </div>
+          )}
+          {apiKey && !showKeyInput && (
+            <div style={{background:"#EDFAF3",borderBottom:"1px solid #A0D8B8",padding:"6px 28px",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+              <span style={{fontSize:13,color:"#0A7A3E"}}>🔑 API Key configurada</span>
+              <button onClick={()=>setShowKeyInput(true)} style={{fontSize:11,color:"#0A7A3E",background:"none",border:"1px solid #A0D8B8",borderRadius:5,padding:"2px 10px",cursor:"pointer"}}>Cambiar</button>
+            </div>
+          )}
+          <div style={{padding:"14px 28px",borderBottom:`1px solid ${C.border}`,background:"#fff",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:18}}>{MODULE_ICONS[module]}</span>
+                <h1 style={{fontSize:17,fontWeight:700,color:C.text}}>{MODULE_LABELS[module]}</h1>
+              </div>
+              <p style={{fontSize:11,color:C.muted,marginTop:2}}>
+                <span style={{fontWeight:600,color:C.blue}}>{localName}</span>
+                <span style={{margin:"0 6px",color:C.border}}>·</span>
+                <span>{localSub}</span>
+                <span style={{margin:"0 6px",color:C.border}}>·</span>
+                <span>{completePct}% datos completados</span>
+              </p>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              {alerts>0&&<span className="tag tag-danger">⚠️ {alerts} alerta{alerts>1?"s":""} legal{alerts>1?"es":""}</span>}
+              <span className="tag tag-green"><span style={{width:6,height:6,borderRadius:"50%",background:C.success,display:"inline-block"}}/>IA activa</span>
+              <span className="tag tag-blue">{local==="almibar"?"🍸":"🇵🇪"} {localName}</span>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div style={{flex:1,overflowY:"auto",padding:"22px 28px"}}>
+            {ActiveComp&&<ActiveComp key={`${module}-${local}`} biz={biz} local={local} updateBiz={updateBiz} onNavigate={onNavigate}/>}
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
