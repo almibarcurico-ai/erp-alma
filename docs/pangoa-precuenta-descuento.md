@@ -67,6 +67,19 @@ Migración `pangoa_reactivar_convenio` (archivo `sql/20260913_pangoa_reactivar_c
 
 La orden 3428 fue anulada desde el POS a las 14:41 (antes de la reactivación); ese cobro quedó fuera del sistema.
 
+## Etiqueta con el porcentaje (14:55, mismo día)
+
+El ticket imprimía "Descuento Convenio cocina:" sin el "40%": el saneador de `enqueue_print_job` (migración `precuenta_include_manual_discount`, 10-jun) borra el porcentaje cuando no coincide con `descuento / subtotal`, y el 40 % aplica sólo a los platos de cocina (25.040 sobre 85.200 es 29 %).
+
+Migración `precuenta_etiqueta_descuento_conserva_porcentaje` (archivo `sql/20260913_precuenta_etiqueta_descuento_conserva_porcentaje.sql`): el saneador sólo actúa cuando la etiqueta dejaría de describir el monto impreso, es decir, cuando hay un descuento manual sumado encima o varias líneas de descuento combinadas. Con una sola línea del breakdown y sin manual, la etiqueta se imprime tal cual. Pruebas en transacción revertida:
+
+| Caso | Etiqueta impresa |
+|---|---|
+| Convenio solo | `Descuento Convenio 40% cocina:` |
+| Convenio + 10 % manual | `Descuento Convenio 40% cocina:` (el manual se ignora por la regla de dedupe Itaú/Convenio ya existente) |
+| 40 % manual sin breakdown | `Descuento (40%):` |
+| Dos líneas de breakdown (estilo Almíbar) | `Happy Hour:` (sin porcentaje, igual que antes) |
+
 ## Pendiente
 
 - Si administración de verdad quiere descontinuar el Convenio, hacerlo primero en el front-end del POS (repo `restoia-app`, deploy `app.restoclick.cl`), quitando el botón; recién después recrear el trigger. Bloquearlo sólo en la base de datos deja al garzón con una pantalla que no coincide con la impresora.
