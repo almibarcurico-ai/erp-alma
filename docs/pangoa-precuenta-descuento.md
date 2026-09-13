@@ -4,7 +4,7 @@
 
 ## Síntoma
 
-En Pangoa, al elegir un descuento en la pantalla de precuenta y tocar **Imprimir**, la precuenta no salía por la impresora de caja. Sin descuento sí imprimía.
+En Pangoa, al elegir un descuento en la pantalla de precuenta y tocar **Imprimir**, la precuenta no salía por la impresora de caja. Con los descuentos genéricos (10 / 20 / 30 / 40 %) sí imprimía; fallaba al elegir el **Descuento Convenio**.
 
 ## Cómo funciona la precuenta en el POS nuevo
 
@@ -16,7 +16,7 @@ En Pangoa, al elegir un descuento en la pantalla de precuenta y tocar **Imprimir
 
 El 01-sep-2026 se descontinuó el "Descuento Convenio 40% cocina" de Pangoa con la migración `pangoa_descontinuar_convenio`. Esa migración creó el trigger `trg_pangoa_guard_convenio` (BEFORE INSERT/UPDATE en `orders`), que lanza una excepción cuando el `pricing_breakdown` que llega contiene la palabra "convenio" y la orden no lo tenía antes.
 
-El POS desplegado todavía tiene el botón/regla Convenio para Pangoa (la migración lo dice: "puente hasta que se despliegue el POS sin el botón"). Cuando el garzón lo elige, el POS envía un `pricing_breakdown` con la línea `Descuento Convenio 40% cocina`, y el guard rechaza **el UPDATE completo**, incluido `notes = 'PRECUENTA_REQUEST'`. Como la nota nunca se escribe, el trigger de precuenta nunca corre y no hay `print_jobs`. El POS queda sin imprimir.
+El POS desplegado todavía tiene el botón Convenio para Pangoa (la migración lo dice: "puente hasta que se despliegue el POS sin el botón"). Cuando el garzón lo elige, el POS envía un `pricing_breakdown` con la línea `Descuento Convenio 40% cocina`, y el guard rechaza **el UPDATE completo**, incluido `notes = 'PRECUENTA_REQUEST'`. Como la nota nunca se escribe, el trigger de precuenta nunca corre y no hay `print_jobs`.
 
 Evidencia en los logs de Postgres (12 y 13 de septiembre, decenas de veces por servicio):
 
@@ -26,29 +26,36 @@ CONTEXT: PL/pgSQL function pangoa_guard_convenio_descontinuado() line 19 at RAIS
 query: UPDATE "public"."orders" SET "discount_type" = ..., "discount_value" = ..., "notes" = ..., "pricing_breakdown" = ..., "subtotal" = ..., "total" = ...
 ```
 
-Los intentos llegan en pares (aplicar descuento, luego Imprimir) y sólo imprime cuando el garzón vuelve a intentar con un descuento genérico (10 / 20 / 30 / 40 %), que no lleva la palabra "convenio".
+Los intentos llegan en pares (aplicar descuento, luego Imprimir) y sólo imprime cuando el garzón vuelve a intentar con un descuento genérico.
 
 ## Solución aplicada
 
-Migración `pangoa_convenio_no_bloquear_precuenta` (archivo `sql/20260913_pangoa_convenio_no_bloquear_precuenta.sql`), ya aplicada en producción:
+Migración `pangoa_convenio_precuenta_y_cierre` (archivo `sql/20260913_pangoa_convenio_no_bloquear_precuenta.sql`), aplicada en producción. El guard sigue impidiendo que el Convenio se aplique, pero ya no deja la precuenta sin imprimir:
 
-- El guard deja de lanzar excepción. En su lugar **quita las líneas Convenio** de `pricing_breakdown.discountLines`, recalcula `totalDiscount`, `total`, `finalTotal` y `suggestedTip`, y si no queda ningún descuento automático deja `pricing_breakdown = NULL`.
-- Recalcula `orders.total` = subtotal − descuento manual (porcentaje o monto) − descuentos automáticos que sigan vigentes.
-- Registra el intento en `order_logs` con la acción `convenio_descontinuado_ignorado` para que administración vea cuántas veces se sigue tocando el botón.
-- Sigue siendo fail-open: si algo falla dentro del guard, la fila pasa sin cambios.
-- La definición anterior quedó respaldada en `public._bak_pangoa_guard_convenio_20260913` (con RLS habilitado). Para volver atrás basta ejecutar ese `definition`.
+| Update que llega con Convenio | Antes | Ahora |
+|---|---|---|
+| Pedido de precuenta (`notes = 'PRECUENTA_REQUEST'`) | Excepción, nada se imprime | Se quitan las líneas Convenio del breakdown, se recalculan totales, se registra en `order_logs` (`convenio_descontinuado_ignorado`) y **la precuenta se imprime sin el Convenio** |
+| Aplicar el descuento (sin precuenta) o cerrar una mesa que nunca pasó por precuenta | Excepción | Excepción (igual), con un hint más claro: "Quite el Descuento Convenio y use otro descuento" |
+| Cierre de una mesa que ya pasó por una precuenta con Convenio ignorado | — | No se bloquea (el pago ya está insertado; bloquear generaría pagos duplicados). Si el total cobrado es menor de lo que explican los descuentos registrados, el Convenio cobrado queda **registrado como descuento manual `monto`** y se anota en `order_logs` (`convenio_cobrado_descontinuado`) |
 
-Resultado: el UPDATE se acepta, `notes` queda en `PRECUENTA_REQUEST`, se encola la precuenta y se imprime **sin** el descuento Convenio (que sigue descontinuado). Cualquier otro descuento (10 / 20 / 30 / 40 % o monto fijo) se imprime igual que antes.
+Sigue siendo fail-open: si algo falla dentro del guard, la fila pasa sin cambios. La definición original quedó respaldada en `public._bak_pangoa_guard_convenio_20260913` (con RLS habilitado). Para volver atrás basta ejecutar ese `definition`.
 
-Pruebas hechas en una transacción revertida sobre la orden 3423 de Pangoa:
+### Pruebas (transacción revertida, sobre órdenes abiertas de Pangoa)
 
 | Caso | Resultado |
 |---|---|
-| Convenio + `PRECUENTA_REQUEST` | UPDATE aceptado, breakdown NULL, total 57.400, 1 `print_jobs` tipo precuenta con descuento 0, 1 fila en `order_logs` |
-| Convenio + otra línea + 10 % manual | Se conserva la otra línea (1.000), total recalculado, breakdown coherente |
-| UPDATE sin Convenio | Sin cambios, sin log |
+| Aplicar Convenio sin precuenta | Excepción, orden sin cambios |
+| Convenio + `PRECUENTA_REQUEST` | UPDATE aceptado, breakdown NULL, total completo, 1 `print_jobs` precuenta con descuento 0, 1 log |
+| Cierre de esa orden con total bajo | Cierre aceptado, `discount_type = monto` por la diferencia, 1 log `convenio_cobrado_descontinuado` |
+| Cierre reenviando el breakdown con Convenio | Breakdown limpiado y diferencia registrada como monto |
+| Cierre de una orden nunca marcada, con total bajo | Sin cambios (no se toca) |
+| Cierre de una orden nunca marcada, con Convenio en el breakdown | Excepción (igual que antes) |
+
+### Incidente durante la ventana intermedia
+
+Entre las 17:16 y las 17:30 UTC del 13-sep estuvo activa una primera versión del guard que sólo limpiaba el Convenio (sin bloquear el paso de "aplicar descuento"). En esa ventana la orden **3425** (mesa 22) se cerró cobrando el total con Convenio (subtotal 38.600, total 27.880, pago débito 31.740 con 3.860 de propina) sin descuento registrado. La migración corrige ese registro: `discount_type = monto`, `discount_value = 10.720`, con nota en `order_logs`. El cobro al cliente no cambia; sólo queda explicado en reportes.
 
 ## Pendiente (fuera de este repo)
 
-- Quitar el botón/regla "Descuento Convenio" de Pangoa en el front-end del POS (repo `restoia-app`, deploy `app.restoclick.cl`). Mientras siga ahí, el garzón lo puede tocar; ahora simplemente se ignora y la precuenta sale sin ese descuento.
-- Revisar la tabla `order_logs` (acción `convenio_descontinuado_ignorado`) para confirmar que los intentos bajan una vez retirado el botón.
+- Quitar el botón "Descuento Convenio" de Pangoa en el front-end del POS (repo `restoia-app`, deploy `app.restoclick.cl`). Mientras siga ahí, el garzón verá el aviso al tocarlo y la precuenta saldrá sin ese descuento.
+- Revisar `order_logs` (acciones `convenio_descontinuado_ignorado` y `convenio_cobrado_descontinuado`) para confirmar que los intentos bajan una vez retirado el botón, y para detectar cobros con Convenio hechos desde la pantalla del POS.
