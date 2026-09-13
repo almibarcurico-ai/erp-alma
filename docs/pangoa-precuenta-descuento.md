@@ -28,17 +28,17 @@ query: UPDATE "public"."orders" SET "discount_type" = ..., "discount_value" = ..
 
 Los intentos llegan en pares (aplicar descuento, luego Imprimir) y sólo imprime cuando el garzón vuelve a intentar con un descuento genérico.
 
-## Solución aplicada
+## Primer arreglo: guard que no bloquea la precuenta
 
-Migración `pangoa_convenio_precuenta_y_cierre` (archivo `sql/20260913_pangoa_convenio_no_bloquear_precuenta.sql`), aplicada en producción. El guard sigue impidiendo que el Convenio se aplique, pero ya no deja la precuenta sin imprimir:
+Migración `pangoa_convenio_precuenta_y_cierre` (archivo `sql/20260913_pangoa_convenio_no_bloquear_precuenta.sql`). El guard seguía impidiendo que el Convenio se aplicara, pero ya no dejaba la precuenta sin imprimir:
 
-| Update que llega con Convenio | Antes | Ahora |
+| Update que llega con Convenio | Antes | Con este guard |
 |---|---|---|
 | Pedido de precuenta (`notes = 'PRECUENTA_REQUEST'`) | Excepción, nada se imprime | Se quitan las líneas Convenio del breakdown, se recalculan totales, se registra en `order_logs` (`convenio_descontinuado_ignorado`) y **la precuenta se imprime sin el Convenio** |
 | Aplicar el descuento (sin precuenta) o cerrar una mesa que nunca pasó por precuenta | Excepción | Excepción (igual), con un hint más claro: "Quite el Descuento Convenio y use otro descuento" |
 | Cierre de una mesa que ya pasó por una precuenta con Convenio ignorado | — | No se bloquea (el pago ya está insertado; bloquear generaría pagos duplicados). Si el total cobrado es menor de lo que explican los descuentos registrados, el Convenio cobrado queda **registrado como descuento manual `monto`** y se anota en `order_logs` (`convenio_cobrado_descontinuado`) |
 
-Sigue siendo fail-open: si algo falla dentro del guard, la fila pasa sin cambios. La definición original quedó respaldada en `public._bak_pangoa_guard_convenio_20260913` (con RLS habilitado). Para volver atrás basta ejecutar ese `definition`.
+Fail-open: si algo falla dentro del guard, la fila pasa sin cambios. La definición original quedó respaldada en `public._bak_pangoa_guard_convenio_20260913` (con RLS habilitado).
 
 ### Pruebas (transacción revertida, sobre órdenes abiertas de Pangoa)
 
@@ -55,7 +55,19 @@ Sigue siendo fail-open: si algo falla dentro del guard, la fila pasa sin cambios
 
 Entre las 17:16 y las 17:30 UTC del 13-sep estuvo activa una primera versión del guard que sólo limpiaba el Convenio (sin bloquear el paso de "aplicar descuento"). En esa ventana la orden **3425** (mesa 22) se cerró cobrando el total con Convenio (subtotal 38.600, total 27.880, pago débito 31.740 con 3.860 de propina) sin descuento registrado. La migración corrige ese registro: `discount_type = monto`, `discount_value = 10.720`, con nota en `order_logs`. El cobro al cliente no cambia; sólo queda explicado en reportes.
 
-## Pendiente (fuera de este repo)
+## Arreglo definitivo: Convenio reactivado (14:45, mismo día)
 
-- Quitar el botón "Descuento Convenio" de Pangoa en el front-end del POS (repo `restoia-app`, deploy `app.restoclick.cl`). Mientras siga ahí, el garzón verá el aviso al tocarlo y la precuenta saldrá sin ese descuento.
-- Revisar `order_logs` (acciones `convenio_descontinuado_ignorado` y `convenio_cobrado_descontinuado`) para confirmar que los intentos bajan una vez retirado el botón, y para detectar cobros con Convenio hechos desde la pantalla del POS.
+Con el guard anterior, la mesa 18 (orden 3428) imprimió la precuenta **sin** el Convenio (subtotal 85.200, total 93.720 con propina) mientras la pantalla del POS mostraba 60.160 con el Convenio aplicado. Desde Pangoa avisaron por WhatsApp: "imprime sin descuento, cobraremos con foto". Es decir, en la operación real Pangoa sigue usando el Convenio y la decisión del 01-sep no se reflejaba ni en el POS ni en el local.
+
+Migración `pangoa_reactivar_convenio` (archivo `sql/20260913_pangoa_reactivar_convenio.sql`): se elimina el trigger `trg_pangoa_guard_convenio`. La función queda guardada por si administración decide descontinuarlo de nuevo (basta recrear el trigger). Con eso el flujo vuelve al anterior al 01-sep:
+
+- El POS persiste el breakdown con la línea "Descuento Convenio 40% cocina".
+- La precuenta sale con el descuento (probado en transacción revertida sobre la orden 3428: subtotal 85.200, descuento 25.040, propina sugerida 8.520 sobre el subtotal sin descuento, total 60.160; con propina 68.680, igual que la pantalla).
+- El cierre registra el Convenio en `pricing_breakdown`, como todas las órdenes con Convenio hasta el 30-ago.
+
+La orden 3428 fue anulada desde el POS a las 14:41 (antes de la reactivación); ese cobro quedó fuera del sistema.
+
+## Pendiente
+
+- Si administración de verdad quiere descontinuar el Convenio, hacerlo primero en el front-end del POS (repo `restoia-app`, deploy `app.restoclick.cl`), quitando el botón; recién después recrear el trigger. Bloquearlo sólo en la base de datos deja al garzón con una pantalla que no coincide con la impresora.
+- `order_logs` (acciones `convenio_descontinuado_ignorado` y `convenio_cobrado_descontinuado`) queda sólo como historial de lo ocurrido hoy; con el trigger fuera ya no se generan filas nuevas.
