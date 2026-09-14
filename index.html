@@ -148,7 +148,7 @@ async function claude(system, user, onChunk) {
   if (!key) throw new Error("API key no configurada — ingresa tu clave Anthropic en el panel superior");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":key,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1800, system, messages:[{role:"user",content:user}], stream:true }),
+    body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1800, system, messages:Array.isArray(user)?user:[{role:"user",content:user}], stream:true }),
   });
   if (!res.ok) throw new Error(`API ${res.status}`);
   const reader = res.body.getReader(); const dec = new TextDecoder(); let full="";
@@ -179,6 +179,9 @@ function buildContext(biz, local) {
   add("OPERACIONES", ops);
   add("LEGAL", legal);
   add("ESTRATEGIA", est);
+  add("COMERCIAL", biz.comercial?.[local]||{});
+  const pipe=(biz.pipeline?.[local]||[]).filter(l=>l.estado!=="cerrado"&&l.estado!=="perdido");
+  if(pipe.length){ lines.push("\n[PIPELINE COMERCIAL ABIERTO]"); pipe.forEach(l=>lines.push(`- ${l.nombre} (${l.tipo}) · $${Number(l.valor||0).toLocaleString("es-CL")} · estado: ${l.estado} · próximo paso: ${l.proximoPaso||"—"}`)); }
   return lines.join("\n");
 }
 
@@ -296,7 +299,16 @@ const emptyEst = () => ({
   competidores:"", posicionamiento:"", inversionesPlaneadas:"", planesExpansion:"", kpisDeseados:"",
 });
 
+const emptyComercial = () => ({
+  canalesVenta:"", plataformasDelivery:"", cartaEstrella:"", precioPromedio:"",
+  horariosPeak:"", promocionesActivas:"", clientesCorporativos:"", eventosCapacidad:"",
+  redesSociales:"", ratingGoogle:"", programaFidelizacion:"", alianzasLocales:"",
+  metaComercialMes:"", objetivoComercial:"",
+});
+
 const INITIAL_BIZ = {
+  comercial:{ almibar:emptyComercial(), pangoa:emptyComercial() },
+  pipeline:{ almibar:[], pangoa:[] },
   locales:{ almibar:emptyLocal(), pangoa:emptyLocal() },
   finanzas:{ almibar:emptyFin(), pangoa:emptyFin() },
   rrhh:{ almibar:emptyRRHH(), pangoa:emptyRRHH() },
@@ -914,6 +926,270 @@ Tienes acceso completo al contexto del negocio:\n${ctx}\n\nEres directo, prácti
   );
 }
 
+// ─── MODULE: AGENTE COMERCIAL (PANGOA) ────────────────────────────────────────
+const PIPE_ESTADOS = ["nuevo","contactado","propuesta","negociación","cerrado","perdido"];
+const PIPE_TIPOS = ["Evento privado","Cliente corporativo","Mesa grande / reserva","Delivery / pedido recurrente","Alianza local","Otro"];
+const PIPE_TAG = { nuevo:"tag-blue", contactado:"tag-blue", propuesta:"tag-warn", "negociación":"tag-warn", cerrado:"tag-green", perdido:"tag-danger" };
+
+function ModuleComercial({ biz, local, updateBiz, setArea, onSelectLocal }) {
+  const data=biz.comercial[local];
+  const set=(k,v)=>updateBiz("comercial",local,k,v);
+  const pipeline=biz.pipeline[local]||[];
+  const setPipeline=(next)=>setArea("pipeline",local,next);
+  const [subTab,setSubTab]=useState("chat");
+  const localName=local==="almibar"?"Almíbar (Bar, Curicó)":"Pangoa (Restaurante Peruano, Talca)";
+  const shortName=local==="almibar"?"Almíbar":"Pangoa";
+
+  const fields=[
+    {key:"objetivoComercial",label:"Objetivo comercial principal",placeholder:"Ej: Llenar el salón de martes a jueves, duplicar delivery, captar empresas de Talca",rows:2,full:true},
+    {key:"metaComercialMes",label:"Meta comercial del mes (CLP)",type:"number",placeholder:"Ej: 9000000"},
+    {key:"precioPromedio",label:"Ticket / precio promedio por persona (CLP)",type:"number",placeholder:"Ej: 14000"},
+    {key:"canalesVenta",label:"Canales de venta activos",placeholder:"Ej: Salón, WhatsApp, Instagram, Rappi, PedidosYa, eventos"},
+    {key:"plataformasDelivery",label:"Plataformas delivery y comisión",placeholder:"Ej: Rappi 25%, PedidosYa 22%, delivery propio"},
+    {key:"cartaEstrella",label:"Platos estrella y precios",placeholder:"Ej: Lomo saltado $13.900, Ceviche $11.900, Ají de gallina $10.900",rows:2,full:true},
+    {key:"horariosPeak",label:"Horarios y días peak / valle",placeholder:"Ej: Peak viernes y sábado almuerzo; valle martes-miércoles noche"},
+    {key:"promocionesActivas",label:"Promociones activas",placeholder:"Ej: Menú ejecutivo $8.900, 2x1 pisco sour jueves"},
+    {key:"clientesCorporativos",label:"Clientes corporativos / empresas",placeholder:"Ej: Universidad de Talca, Clínica del Maule, oficinas del centro",rows:2},
+    {key:"eventosCapacidad",label:"Eventos: capacidad y tipos",placeholder:"Ej: 60 personas, cumpleaños, cenas de empresa, celebraciones peruanas",rows:2},
+    {key:"redesSociales",label:"Redes sociales (cuenta y seguidores)",placeholder:"Ej: @pangoatalca 4.200 seguidores IG, Facebook 1.800"},
+    {key:"ratingGoogle",label:"Rating Google / reseñas",placeholder:"Ej: 4.6 (310 reseñas), quejas por demora en fin de semana"},
+    {key:"programaFidelizacion",label:"Programa de fidelización",placeholder:"Ej: Ninguno / tarjeta de 10 visitas / base de WhatsApp"},
+    {key:"alianzasLocales",label:"Alianzas locales",placeholder:"Ej: Hoteles, oficinas de turismo, colegios, emprendedores peruanos"},
+  ];
+
+  // ── Chat con memoria ──
+  const [messages,setMessages]=useState([]);
+  const [input,setInput]=useState(""); const [loading,setLoading]=useState(false);
+  const bottomRef=useRef(null);
+  useEffect(()=>{
+    setMessages([{role:"assistant",greeting:true,text:`Hola Hector 👋 Soy el agente comercial de ${shortName}. Mi trabajo es vender: llenar mesas, mover el delivery, cerrar eventos y empresas, y traer de vuelta a los clientes que ya nos conocen. Tengo a la vista los datos que has cargado del negocio y el pipeline de oportunidades.\n\n¿Qué atacamos hoy? Puedo armarte el plan comercial de la semana, una promoción para los días flojos, una propuesta para una empresa o el mensaje de seguimiento a un cliente.`}]);
+    setInput("");
+  },[local]);
+  useEffect(()=>{ if(subTab==="chat") bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[messages,subTab]);
+
+  const systemPrompt=()=>`Eres el AGENTE COMERCIAL de ${localName}, parte de Inversiones Alma SpA. Trabajas para Hector Maluenda, el dueño, y lo tratas de "tú" en español chileno, directo y sin relleno.
+
+TU MISIÓN: generar ventas para ${shortName}. Piensas siempre en términos de: ocupación de mesas por día y turno, ticket promedio, delivery (propio y apps), eventos y clientes corporativos, fidelización y recompra, alianzas locales en ${biz.locales[local].ciudad||(local==="pangoa"?"Talca":"Curicó")} y la Región del Maule.
+
+CÓMO TRABAJAS:
+- Cada respuesta termina en acciones concretas con responsable, plazo y cómo medir el resultado.
+- Usas los números reales del negocio cuando existen (ventas, ticket, meta, costos). Si falta un dato clave, lo pides una vez y sigues con un supuesto explícito.
+- Propones promociones que cuiden el margen: nunca regalas plata sin explicar qué se gana (más rotación, más ticket, más recompra).
+- Cuando redactas mensajes (WhatsApp, Instagram, correo a empresas, respuesta a reseñas) los entregas listos para copiar y pegar, en el tono de la marca.
+- Para Pangoa aprovechas la cocina peruana como diferenciador: ceviche, lomo saltado, pisco sour, fechas peruanas (28 de julio, Día del Ceviche 28 de junio, Día del Pisco Sour primer sábado de febrero) y la comunidad peruana del Maule.
+- Eres honesto: si una idea no conviene, lo dices y ofreces una mejor.
+
+CONTEXTO ACTUAL DEL NEGOCIO:
+${buildContext(biz,local)}`;
+
+  const send = async (text) => {
+    const msg=(text??input).trim(); if(!msg||loading) return;
+    setInput("");
+    const history=[...messages.filter(m=>m.text&&!m.error&&!m.greeting),{role:"user",text:msg}];
+    setMessages(p=>[...p,{role:"user",text:msg},{role:"assistant",text:"",streaming:true}]);
+    setLoading(true);
+    const apiMsgs=history.slice(-16).map(m=>({role:m.role,content:m.text}));
+    let aiText="";
+    try {
+      await claude(systemPrompt(),apiMsgs,t=>{ aiText=t; setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:t,streaming:true}; return u; }); });
+    } catch(e) { aiText=e?.message?.includes("API key")?e.message:"Error al conectar. Intenta nuevamente."; }
+    setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:aiText,streaming:false,error:aiText.startsWith("Error")||aiText.startsWith("API key")}; return u; });
+    setLoading(false);
+  };
+
+  const suggestions=[
+    "Arma el plan comercial de esta semana","Necesito llenar el salón los martes y miércoles",
+    "Propón una promo de delivery que no me mate el margen","Redacta una propuesta para almuerzos de empresa",
+    "¿Cómo subo el ticket promedio?","Escribe el mensaje de WhatsApp para reactivar clientes",
+  ];
+
+  // ── Playbooks ──
+  const [pbOut,setPbOut]=useState(""); const [pbLoading,setPbLoading]=useState(false); const [pbActive,setPbActive]=useState("");
+  const playbooks=[
+    {id:"semana",icon:"📅",label:"Plan de ventas semanal",desc:"Acciones día por día para la semana",prompt:`Arma el PLAN COMERCIAL DE LA SEMANA para ${shortName}.\n\n1. META DE LA SEMANA en pesos y en cubiertos (derivada de la meta mensual si existe)\n2. DÍA POR DÍA (lunes a domingo): foco del día, acción comercial concreta, canal, quién la ejecuta\n3. 3 QUICK WINS que se pueden hacer hoy sin gastar\n4. QUÉ MEDIR el domingo para saber si funcionó`},
+    {id:"promos",icon:"🏷️",label:"Promociones con margen",desc:"Ofertas para días valle cuidando rentabilidad",prompt:`Diseña 4 PROMOCIONES para los días y horarios flojos de ${shortName}.\nPara cada una: nombre, mecánica exacta, a quién apunta, precio y margen estimado (usa el costo de ventas si existe), canal de difusión, texto listo para publicar y cómo saber si funcionó. Descarta ideas que solo bajen el precio sin subir rotación o ticket.`},
+    {id:"corporativo",icon:"🏢",label:"Propuesta corporativa",desc:"Almuerzos, eventos y convenios con empresas",prompt:`Prepara la PROPUESTA COMERCIAL PARA EMPRESAS de ${shortName}.\n\n1. Lista de 8-10 tipos de empresas/instituciones objetivo en la zona y por qué\n2. Oferta: menú ejecutivo/convenio, precios sugeridos, condiciones (mínimos, pago, reserva)\n3. Correo de presentación listo para enviar (máx 150 palabras)\n4. Guion de llamada de 60 segundos\n5. Cómo hacer seguimiento (cadencia y mensajes)`},
+    {id:"delivery",icon:"🛵",label:"Estrategia delivery",desc:"Apps, delivery propio y pedidos recurrentes",prompt:`Diseña la ESTRATEGIA DE DELIVERY de ${shortName}.\n\n1. Diagnóstico: apps vs delivery propio, comisiones, qué platos viajan bien\n2. Carta delivery optimizada (qué incluir, combos, precios ajustados por comisión)\n3. Tácticas para llevar clientes de apps a WhatsApp propio sin infringir reglas\n4. Calendario de promos delivery del mes\n5. KPIs: pedidos/día, ticket delivery, % recompra`},
+    {id:"fidelizacion",icon:"💛",label:"Fidelización y recompra",desc:"Base de clientes, WhatsApp y programa de puntos",prompt:`Diseña el PROGRAMA DE FIDELIZACIÓN de ${shortName}.\n\n1. Cómo capturar datos de clientes en salón y delivery (mecánica simple)\n2. Programa de recompra realista (tarjeta, puntos o beneficios) con costo estimado\n3. 3 mensajes de WhatsApp listos: reactivación, cumpleaños, nuevo plato\n4. Calendario de contacto mensual sin ser invasivo\n5. Cómo medir recompra`},
+    {id:"resenas",icon:"⭐",label:"Reseñas y reputación",desc:"Google, Instagram y respuesta a críticas",prompt:`Trabaja la REPUTACIÓN ONLINE de ${shortName}.\n\n1. Diagnóstico según rating y reseñas conocidas\n2. Mecánica para conseguir 20 reseñas nuevas este mes (en salón y delivery)\n3. 3 plantillas de respuesta: reseña positiva, queja por demora, queja por sabor/precio\n4. 5 ideas de contenido para Instagram que vendan (no solo bonitas)\n5. Qué mirar cada semana`},
+  ];
+  const runPlaybook = async (pb) => {
+    setPbActive(pb.id); setPbLoading(true); setPbOut("");
+    try { await claude(systemPrompt(), pb.prompt, t=>setPbOut(t)); }
+    catch(e) { setPbOut(e?.message?.includes("API key")?e.message:"Error al conectar. Intenta nuevamente."); }
+    setPbLoading(false);
+  };
+
+  // ── Pipeline ──
+  const emptyLead=()=>({id:Date.now().toString(36)+Math.random().toString(36).slice(2,6),nombre:"",tipo:PIPE_TIPOS[0],contacto:"",valor:"",estado:"nuevo",proximoPaso:"",fecha:"",notas:""});
+  const [editing,setEditing]=useState(null);
+  const [leadOut,setLeadOut]=useState(""); const [leadLoading,setLeadLoading]=useState(false); const [leadFor,setLeadFor]=useState("");
+  const saveLead=()=>{
+    if(!editing||!editing.nombre.trim()) return;
+    const exists=pipeline.some(l=>l.id===editing.id);
+    setPipeline(exists?pipeline.map(l=>l.id===editing.id?editing:l):[...pipeline,editing]);
+    setEditing(null);
+  };
+  const removeLead=(id)=>{ if(confirm("¿Eliminar esta oportunidad?")) setPipeline(pipeline.filter(l=>l.id!==id)); };
+  const setLeadEstado=(id,estado)=>setPipeline(pipeline.map(l=>l.id===id?{...l,estado}:l));
+  const followUp = async (lead) => {
+    setLeadFor(lead.id); setLeadLoading(true); setLeadOut("");
+    const prompt=`Oportunidad: ${lead.nombre} · Tipo: ${lead.tipo} · Contacto: ${lead.contacto||"—"} · Valor estimado: $${Number(lead.valor||0).toLocaleString("es-CL")} · Estado: ${lead.estado} · Próximo paso: ${lead.proximoPaso||"—"} · Fecha: ${lead.fecha||"—"} · Notas: ${lead.notas||"—"}\n\nDame: 1) Mi lectura de esta oportunidad y probabilidad de cierre 2) El siguiente paso exacto 3) El mensaje listo para enviar (WhatsApp o correo, según el tipo de cliente) 4) Qué ofrecer si pone objeción por precio.`;
+    try { await claude(systemPrompt(), prompt, t=>setLeadOut(t)); }
+    catch(e) { setLeadOut(e?.message?.includes("API key")?e.message:"Error al conectar. Intenta nuevamente."); }
+    setLeadLoading(false);
+  };
+  const abiertos=pipeline.filter(l=>!["cerrado","perdido"].includes(l.estado));
+  const valorAbierto=abiertos.reduce((a,l)=>a+Number(l.valor||0),0);
+  const valorCerrado=pipeline.filter(l=>l.estado==="cerrado").reduce((a,l)=>a+Number(l.valor||0),0);
+  const meta=Number(data.metaComercialMes||0);
+
+  return (
+    <div className="fade-up" style={{display:"flex",flexDirection:"column",gap:20}}>
+      {local!=="pangoa"&&(
+        <div className="alert alert-info" style={{alignItems:"center"}}>
+          <span>🇵🇪</span>
+          <div style={{flex:1}}>El agente comercial está configurado para <b>Pangoa</b>. Aquí lo estás usando con los datos de Almíbar.</div>
+          <button className="btn-ghost btn-sm" onClick={()=>onSelectLocal("pangoa")}>Cambiar a Pangoa →</button>
+        </div>
+      )}
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14}}>
+        <KpiCard icon="🎯" label="Meta comercial del mes" value={meta?`$${meta.toLocaleString("es-CL")}`:null} sub="CLP"/>
+        <KpiCard icon="📂" label="Oportunidades abiertas" value={abiertos.length} sub={`$${valorAbierto.toLocaleString("es-CL")} en pipeline`}/>
+        <KpiCard icon="✅" label="Cerrado este pipeline" value={`$${valorCerrado.toLocaleString("es-CL")}`} sub={meta?`${Math.round(valorCerrado/meta*100)}% de la meta`:"Define la meta en Datos"} color={C.success}/>
+        <KpiCard icon="🧾" label="Ticket promedio" value={data.precioPromedio?`$${Number(data.precioPromedio).toLocaleString("es-CL")}`:null} sub="por persona"/>
+      </div>
+
+      <ModTabs tabs={[{id:"chat",icon:"🤝",label:"Agente"},{id:"playbooks",icon:"⚡",label:"Playbooks"},{id:"pipeline",icon:"📂",label:"Pipeline"},{id:"datos",icon:"📝",label:"Datos comerciales"}]} active={subTab} onChange={setSubTab}/>
+
+      {subTab==="chat"&&(
+        <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 360px)",minHeight:420,gap:12}}>
+          <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10}}>
+            {messages.map((m,i)=>(
+              <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
+                {m.role==="assistant"&&<span style={{fontSize:20,marginRight:8,flexShrink:0,alignSelf:"flex-end",marginBottom:2}}>🤝</span>}
+                <div className={m.role==="user"?"chat-bubble-user":"chat-bubble-ai"} style={m.error?{borderColor:"#F0B8B8",color:C.danger}:undefined}>
+                  {m.text}
+                  {m.streaming&&m.text&&<span style={{color:C.blueLight}}>▋</span>}
+                  {m.streaming&&!m.text&&<div className="spinner" style={{display:"inline-block",width:13,height:13}}/>}
+                </div>
+              </div>
+            ))}
+            <div ref={bottomRef}/>
+          </div>
+          {messages.length<=1&&(
+            <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+              {suggestions.map((s,i)=><button key={i} className="btn-ghost btn-sm" style={{fontSize:12}} onClick={()=>send(s)}>{s}</button>)}
+            </div>
+          )}
+          <div style={{display:"flex",gap:10}}>
+            <textarea className="input" rows={2} placeholder="Pídele al agente comercial una acción de venta, una promo, una propuesta o un mensaje..."
+              value={input} onChange={e=>setInput(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
+              style={{flex:1,resize:"none"}}/>
+            <button className="btn-primary" onClick={()=>send()} disabled={loading||!input.trim()} style={{alignSelf:"flex-end"}}>
+              {loading?<div className="spinner"/>:"→"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {subTab==="playbooks"&&(
+        <>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:14}}>
+            {playbooks.map(pb=>(
+              <div key={pb.id} className="card" style={{cursor:"pointer",borderColor:pbActive===pb.id?C.blueLight:undefined,display:"flex",flexDirection:"column",gap:6}} onClick={()=>!pbLoading&&runPlaybook(pb)}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}><span style={{fontSize:20}}>{pb.icon}</span><div style={{fontWeight:700,fontSize:13.5}}>{pb.label}</div></div>
+                <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>{pb.desc}</div>
+                <div style={{marginTop:"auto",fontSize:11.5,fontWeight:600,color:C.blue}}>{pbLoading&&pbActive===pb.id?"Generando...":"Ejecutar →"}</div>
+              </div>
+            ))}
+          </div>
+          <div className="card">
+            <SectionHeader icon="🤝" title={pbActive?playbooks.find(p=>p.id===pbActive)?.label:"Resultado"}/>
+            <AIBox text={pbOut} loading={pbLoading} placeholder="Elige un playbook. El agente lo ejecuta con los datos reales del negocio."/>
+          </div>
+        </>
+      )}
+
+      {subTab==="pipeline"&&(
+        <>
+          <div className="card">
+            <SectionHeader icon="📂" title={`Oportunidades comerciales · ${shortName}`}>
+              <button className="btn-primary btn-sm" onClick={()=>setEditing(emptyLead())}>+ Nueva oportunidad</button>
+            </SectionHeader>
+            {pipeline.length===0&&<div style={{textAlign:"center",padding:"24px",color:C.muted,fontSize:13}}>Aún no hay oportunidades. Registra eventos, empresas, reservas grandes o alianzas para que el agente las trabaje contigo.</div>}
+            {pipeline.length>0&&(
+              <div style={{overflowX:"auto"}}>
+                <table className="data-table">
+                  <thead><tr><th>Cliente</th><th>Tipo</th><th>Valor</th><th>Estado</th><th>Próximo paso</th><th>Fecha</th><th></th></tr></thead>
+                  <tbody>
+                    {pipeline.map(l=>(
+                      <tr key={l.id}>
+                        <td><div style={{fontWeight:600}}>{l.nombre}</div><div style={{fontSize:11,color:C.muted}}>{l.contacto}</div></td>
+                        <td style={{fontSize:12}}>{l.tipo}</td>
+                        <td className="mono" style={{fontSize:12}}>${Number(l.valor||0).toLocaleString("es-CL")}</td>
+                        <td>
+                          <select className="select" style={{padding:"4px 8px",fontSize:11.5,width:"auto"}} value={l.estado} onChange={e=>setLeadEstado(l.id,e.target.value)}>
+                            {PIPE_ESTADOS.map(s=><option key={s} value={s}>{s}</option>)}
+                          </select>
+                        </td>
+                        <td style={{fontSize:12}}>{l.proximoPaso||"—"}</td>
+                        <td style={{fontSize:12}}>{l.fecha||"—"}</td>
+                        <td style={{whiteSpace:"nowrap"}}>
+                          <button className="btn-ghost btn-sm" onClick={()=>followUp(l)} disabled={leadLoading}>🤝 Siguiente paso</button>{" "}
+                          <button className="btn-ghost btn-sm" onClick={()=>setEditing({...l})}>Editar</button>{" "}
+                          <button className="btn-ghost btn-sm" onClick={()=>removeLead(l.id)} style={{color:C.danger}}>✕</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {editing&&(
+            <div className="card" style={{borderColor:C.blueLight}}>
+              <SectionHeader icon="✏️" title={pipeline.some(l=>l.id===editing.id)?"Editar oportunidad":"Nueva oportunidad"}/>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+                <div><label className="label">Cliente / empresa</label><input className="input" value={editing.nombre} onChange={e=>setEditing({...editing,nombre:e.target.value})} placeholder="Ej: Clínica del Maule"/></div>
+                <div><label className="label">Tipo</label><select className="select" value={editing.tipo} onChange={e=>setEditing({...editing,tipo:e.target.value})}>{PIPE_TIPOS.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+                <div><label className="label">Contacto</label><input className="input" value={editing.contacto} onChange={e=>setEditing({...editing,contacto:e.target.value})} placeholder="Nombre, WhatsApp o correo"/></div>
+                <div><label className="label">Valor estimado (CLP)</label><input className="input" type="number" value={editing.valor} onChange={e=>setEditing({...editing,valor:e.target.value})} placeholder="Ej: 450000"/></div>
+                <div><label className="label">Estado</label><select className="select" value={editing.estado} onChange={e=>setEditing({...editing,estado:e.target.value})}>{PIPE_ESTADOS.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+                <div><label className="label">Fecha clave</label><input className="input" type="date" value={editing.fecha} onChange={e=>setEditing({...editing,fecha:e.target.value})}/></div>
+                <div style={{gridColumn:"span 2"}}><label className="label">Próximo paso</label><input className="input" value={editing.proximoPaso} onChange={e=>setEditing({...editing,proximoPaso:e.target.value})} placeholder="Ej: Enviar cotización el jueves"/></div>
+                <div style={{gridColumn:"span 2"}}><label className="label">Notas</label><textarea className="input" rows={2} value={editing.notas} onChange={e=>setEditing({...editing,notas:e.target.value})} placeholder="Qué pidió, objeciones, presupuesto..."/></div>
+              </div>
+              <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+                <button className="btn-ghost" onClick={()=>setEditing(null)}>Cancelar</button>
+                <button className="btn-primary" onClick={saveLead} disabled={!editing.nombre.trim()}>Guardar</button>
+              </div>
+            </div>
+          )}
+
+          {(leadOut||leadLoading)&&(
+            <div className="card">
+              <SectionHeader icon="🤝" title={`Siguiente paso · ${pipeline.find(l=>l.id===leadFor)?.nombre||""}`}/>
+              <AIBox text={leadOut} loading={leadLoading}/>
+            </div>
+          )}
+        </>
+      )}
+
+      {subTab==="datos"&&(
+        <div className="card">
+          <SectionHeader icon="📝" title="Datos comerciales"><Completeness data={data}/></SectionHeader>
+          <p style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.6}}>Mientras más completo esté esto, más precisas son las promociones, propuestas y planes del agente. Se guarda en este navegador.</p>
+          <DataGrid fields={fields} data={data} onChange={set}/>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── NAVIGATION CONFIG ────────────────────────────────────────────────────────
 
 // ─── MODULE: IMPORTAR ────────────────────────────────────────────────────────
@@ -1200,6 +1476,7 @@ const NAV = [
     {id:"importar",icon:"📥",label:"Importar Fudo"},
   ]},
   { group:"IA", items:[
+    {id:"comercial",icon:"🤝",label:"Agente Comercial"},
     {id:"consultor",icon:"🤖",label:"Consultor IA"},
   ]},
 ];
@@ -1208,23 +1485,38 @@ const MODULE_COMPONENTS = {
   ceo:ModuleCEO, local:ModuleLocal, marketing:ModuleMarketing,
   finanzas:ModuleFinanzas, rrhh:ModuleRRHH, operaciones:ModuleOperaciones,
   legal:ModuleLegal, estrategia:ModuleEstrategia, consultor:ModuleConsultor,
-  importar:ModuleImportar,
+  importar:ModuleImportar, comercial:ModuleComercial,
 };
 const MODULE_LABELS = {
   ceo:"Dashboard CEO",local:"Mi Local",marketing:"Marketing",finanzas:"Finanzas",
-  rrhh:"RRHH",operaciones:"Operaciones",legal:"Legal",estrategia:"Estrategia",consultor:"Consultor IA",importar:"Importar Fudo"
+  rrhh:"RRHH",operaciones:"Operaciones",legal:"Legal",estrategia:"Estrategia",consultor:"Consultor IA",importar:"Importar Fudo",comercial:"Agente Comercial"
 };
 const MODULE_ICONS = {
   ceo:"📊",local:"🏪",marketing:"📣",finanzas:"💰",
-  rrhh:"👥",operaciones:"⚙️",legal:"⚖️",estrategia:"🧭",consultor:"🤖",importar:"📥"
+  rrhh:"👥",operaciones:"⚙️",legal:"⚖️",estrategia:"🧭",consultor:"🤖",importar:"📥",comercial:"🤝"
 };
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App() {
   const [local,setLocal]=useState("almibar");
   const [module,setModule]=useState("ceo");
-  const [biz,setBiz]=useState(INITIAL_BIZ);
-  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("alma_api_key")||"");
+  const [biz,setBiz]=useState(()=>{
+    try {
+      const saved=JSON.parse(localStorage.getItem("alma_biz")||"null");
+      if(!saved) return INITIAL_BIZ;
+      const merged={};
+      Object.keys(INITIAL_BIZ).forEach(area=>{
+        merged[area]={};
+        Object.keys(INITIAL_BIZ[area]).forEach(l=>{
+          const base=INITIAL_BIZ[area][l]; const sv=saved[area]?.[l];
+          merged[area][l]=Array.isArray(base)?(Array.isArray(sv)?sv:base):{...base,...(sv||{})};
+        });
+      });
+      return merged;
+    } catch { return INITIAL_BIZ; }
+  });
+  useEffect(()=>{ try { localStorage.setItem("alma_biz",JSON.stringify(biz)); } catch {} },[biz]);
+  const [apiKey,setApiKey]=useState(()=>{ const k=localStorage.getItem("alma_api_key")||""; if(k) window.__ALMA_KEY__=k; return k; });
   const [showKeyInput,setShowKeyInput]=useState(()=>!localStorage.getItem("alma_api_key"));
 
   // Load SheetJS for Excel parsing
@@ -1240,6 +1532,10 @@ function App() {
     setBiz(p=>({ ...p, [area]:{ ...p[area], [localId]:{ ...p[area][localId], [key]:value } } }));
   },[]);
 
+  const setArea = useCallback((area,localId,value)=>{
+    setBiz(p=>({ ...p, [area]:{ ...p[area], [localId]:value } }));
+  },[]);
+
   const ActiveComp = MODULE_COMPONENTS[module];
   const onNavigate = (mod) => setModule(mod);
   const localName = local==="almibar"?"Almíbar":"Pangoa";
@@ -1249,8 +1545,8 @@ function App() {
   const legalData=biz.legal[local];
   const alerts=[legalData.multasPendientes,legalData.licenciaAlcohol==="Vencida",legalData.patenteComercial==="Vencida",legalData.situacionTributaria==="Con deuda SII"].filter(Boolean).length;
 
-  const totalCompleteness = ["locales","finanzas","rrhh","operaciones","legal","estrategia"].reduce((acc,k)=>acc+countFilled(biz[k][local]),0);
-  const totalFields2 = ["locales","finanzas","rrhh","operaciones","legal","estrategia"].reduce((acc,k)=>acc+totalFields(biz[k][local]),0);
+  const totalCompleteness = ["locales","finanzas","rrhh","operaciones","legal","estrategia","comercial"].reduce((acc,k)=>acc+countFilled(biz[k][local]),0);
+  const totalFields2 = ["locales","finanzas","rrhh","operaciones","legal","estrategia","comercial"].reduce((acc,k)=>acc+totalFields(biz[k][local]),0);
   const completePct = totalFields2>0?Math.round(totalCompleteness/totalFields2*100):0;
 
   return (
@@ -1380,7 +1676,7 @@ function App() {
 
           {/* Content */}
           <div style={{flex:1,overflowY:"auto",padding:"22px 28px"}}>
-            {ActiveComp&&<ActiveComp key={`${module}-${local}`} biz={biz} local={local} updateBiz={updateBiz} onNavigate={onNavigate}/>}
+            {ActiveComp&&<ActiveComp key={`${module}-${local}`} biz={biz} local={local} updateBiz={updateBiz} setArea={setArea} onNavigate={onNavigate} onSelectLocal={setLocal}/>}
           </div>
         </div>
       </div>
