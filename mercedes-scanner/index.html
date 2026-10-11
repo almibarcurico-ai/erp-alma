@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Escáner Mercedes GLA</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1b1f24; --muted: #5d6673; --line: #dde1e6;
+    --accent: #1f5fbf; --ok: #1d7a46; --warn: #a15c00; --bad: #b3261e; --sim: #6a3fb5;
+    --chip: #eef1f5; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111418; --panel: #1a1e24; --text: #e7eaee; --muted: #9aa4b1; --line: #2c323b;
+      --accent: #6ea2ff; --ok: #4cc584; --warn: #f0a640; --bad: #ff7a70; --sim: #b593ff; --chip: #242a32; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  section h2 { margin: 0 0 12px; font-size: 16px; }
+  .banner { padding: 10px 16px; font-weight: 600; text-align: center; }
+  .banner.sim { background: var(--sim); color: #fff; }
+  .banner.real { background: var(--ok); color: #fff; }
+  .banner.off { background: var(--chip); color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button, select { font: inherit; padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--chip); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .mono { font-family: var(--mono); }
+  .muted { color: var(--muted); }
+  .na { color: var(--muted); font-style: italic; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 99px; font-size: 12px; background: var(--chip); }
+  .tag.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+  .tag.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .tag.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+  .notice { border-left: 4px solid var(--warn); padding: 8px 12px; background: var(--chip); border-radius: 6px; font-size: 13px; }
+  #log { max-height: 260px; overflow: auto; font: 12px/1.4 var(--mono); white-space: pre-wrap; background: var(--chip); padding: 8px; border-radius: 6px; }
+  #error { color: var(--bad); font-weight: 600; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div id="banner" class="banner off">Sin conexión</div>
+<header>
+  <h1>Escáner OBD-II · Mercedes-Benz GLA (X156)</h1>
+  <p>Solo lectura. No borra códigos, no ejecuta regeneraciones, codificación ni pruebas de actuadores.</p>
+</header>
+<main>
+  <section>
+    <h2>1. Conexión</h2>
+    <div class="row">
+      <label>Modo
+        <select id="mode">
+          <option value="sim">Simulación (sin vehículo)</option>
+          <option value="real">Adaptador USB real</option>
+        </select>
+      </label>
+      <label id="baudWrap" hidden>Velocidad
+        <select id="baud">
+          <option>38400</option><option>115200</option><option>9600</option><option>500000</option>
+        </select>
+      </label>
+      <button id="connect" class="primary">Conectar</button>
+      <button id="disconnect" disabled>Desconectar</button>
+    </div>
+    <p id="serialHint" class="muted" hidden>El modo real necesita Chrome o Edge en el Mac y la página abierta desde <span class="mono">http://localhost</span>. Safari no es compatible con Web Serial.</p>
+    <p id="error"></p>
+    <dl class="kv" id="adapter"></dl>
+  </section>
+
+  <section>
+    <h2>2. Vehículo</h2>
+    <div class="row"><button id="scan" disabled class="primary">Leer diagnóstico completo</button>
+      <label><input type="checkbox" id="showVin"> Mostrar VIN completo</label></div>
+    <dl class="kv" id="vehicle" style="margin-top:12px"></dl>
+  </section>
+
+  <section>
+    <h2>3. Códigos de falla (OBD-II genérico)</h2>
+    <div class="notice">Un código indica qué prueba interna de la ECU falló, no qué pieza está dañada. Las "posibles causas" son orientativas. Un Check Engine por sí solo no confirma que el DPF esté obstruido.</div>
+    <div class="scroll"><table id="dtcs" style="margin-top:12px"></table></div>
+  </section>
+
+  <section>
+    <h2>4. Freeze frame</h2>
+    <div id="freeze" class="na">Sin leer.</div>
+  </section>
+
+  <section>
+    <h2>5. Datos en vivo</h2>
+    <div class="row"><button id="liveStart" disabled>Iniciar</button><button id="liveStop" disabled>Detener</button>
+      <span class="muted">Actualización ≈ 1 vez por segundo, con pausa entre consultas.</span></div>
+    <div class="scroll"><table id="live" style="margin-top:12px"></table></div>
+  </section>
+
+  <div class="grid2">
+    <section>
+      <h2>6. DPF (filtro de partículas)</h2>
+      <div id="dpf" class="na">Sin leer.</div>
+    </section>
+    <section>
+      <h2>7. Transmisión y paletas</h2>
+      <div id="trans" class="na">Sin leer.</div>
+    </section>
+  </div>
+
+  <section>
+    <h2>8. Exportar</h2>
+    <div class="row">
+      <button id="expJson" disabled>Informe JSON</button>
+      <button id="expTxt" disabled>Informe de texto</button>
+      <button id="expLog">Registro de depuración (sin VIN)</button>
+    </div>
+    <p class="muted">El informe incluye el VIN completo, los códigos originales, la fecha y los datos capturados. El registro de depuración nunca incluye el VIN.</p>
+    <div class="notice">Esta app no determina si el vehículo es seguro para conducir. Ante luces de advertencia, pérdida de potencia o humo, consulte a un taller.</div>
+  </section>
+
+  <section>
+    <h2>Registro de comandos</h2>
+    <div id="log"></div>
+  </section>
+</main>
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
