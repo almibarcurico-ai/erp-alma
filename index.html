@@ -1301,7 +1301,16 @@ const MODULE_ICONS = {
 function App() {
   const [local,setLocal]=useState("almibar");
   const [module,setModule]=useState("ceo");
-  const [biz,setBiz]=useState(INITIAL_BIZ);
+  // Los datos del negocio se guardan en el navegador; se combinan con la estructura base por si se agregan campos nuevos
+  const [biz,setBiz]=useState(()=>{
+    const saved=loadJSON("alma_biz",null);
+    if(!saved) return INITIAL_BIZ;
+    const merged={...INITIAL_BIZ};
+    for(const area of Object.keys(INITIAL_BIZ))
+      merged[area]=Object.fromEntries(Object.keys(INITIAL_BIZ[area]).map(l=>[l,{...INITIAL_BIZ[area][l],...(saved[area]?.[l]||{})}]));
+    return merged;
+  });
+  useEffect(()=>{ saveJSON("alma_biz",biz); },[biz]);
   const [apiKey,setApiKey]=useState(()=>{ const k=localStorage.getItem("alma_api_key")||""; if(k) window.__ALMA_KEY__=k; return k; });
   const [showKeyInput,setShowKeyInput]=useState(()=>!localStorage.getItem("alma_api_key"));
 
