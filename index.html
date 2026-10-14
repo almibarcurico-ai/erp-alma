@@ -143,12 +143,12 @@ const css = `
 `;
 
 // ─── API ──────────────────────────────────────────────────────────────────────
-async function claude(system, user, onChunk) {
+async function claude(system, user, onChunk, maxTokens=1800) {
   const key = window.__ALMA_KEY__;
   if (!key) throw new Error("API key no configurada — ingresa tu clave Anthropic en el panel superior");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":key,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1800, system, messages:[{role:"user",content:user}], stream:true }),
+    body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:maxTokens, system, messages:Array.isArray(user)?user:[{role:"user",content:user}], stream:true }),
   });
   if (!res.ok) throw new Error(`API ${res.status}`);
   const reader = res.body.getReader(); const dec = new TextDecoder(); let full="";
@@ -831,60 +831,138 @@ function ModuleEstrategia({ biz, local, updateBiz }) {
   );
 }
 
-// ─── MODULE: CONSULTOR ────────────────────────────────────────────────────────
+// ─── MODULE: ASESOR PERSONAL ──────────────────────────────────────────────────
+const ASESOR_MEM_KEY="alma_asesor_memoria";
+const ASESOR_CHAT_KEY=l=>`alma_asesor_chat_${l}`;
+const ASESOR_MAX_TURNS=20; // mensajes de historial que se envían a la IA
+const loadJSON=(k,fb)=>{ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fb; }catch{ return fb; } };
+const saveJSON=(k,v)=>{ try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} };
+
 function ModuleConsultor({ biz, local }) {
-  const [messages,setMessages]=useState([]);
+  const localName=local==="almibar"?"Almíbar (Bar, Curicó)":"Pangoa (Restaurante Peruano, Talca)";
+  const greeting=()=>({role:"assistant",text:`Hola Hector 👋 Soy tu asesor personal para ${localName}. Conozco los datos del negocio y recuerdo lo que me pidas guardar en la memoria. Podemos ver finanzas, equipo, operaciones, marketing, legal, estrategia o tus propias prioridades. ¿En qué te ayudo?`});
+
+  const [messages,setMessages]=useState(()=>loadJSON(ASESOR_CHAT_KEY(local),null)||[greeting()]);
+  const [memoria,setMemoria]=useState(()=>loadJSON(ASESOR_MEM_KEY,[]));
+  const [showMem,setShowMem]=useState(false);
+  const [memInput,setMemInput]=useState("");
   const [input,setInput]=useState(""); const [loading,setLoading]=useState(false);
   const bottomRef=useRef(null);
-  const localName=local==="almibar"?"Almíbar (Bar, Curicó)":"Pangoa (Restaurante Peruano, Talca)";
 
+  // Cada local tiene su propia conversación guardada
   useEffect(()=>{
-    setMessages([{role:"assistant",text:`Hola Hector 👋 Soy tu consultor ejecutivo de ${localName}. Tengo acceso a todos los datos que has ingresado del negocio. Puedo ayudarte con cualquier área: finanzas, personas, operaciones, marketing, legal o estrategia. ¿Qué necesitas?`}]);
+    setMessages(loadJSON(ASESOR_CHAT_KEY(local),null)||[greeting()]);
     setInput("");
   },[local]);
 
-  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); },[messages]);
+  useEffect(()=>{
+    if(!messages.some(m=>m.streaming)) saveJSON(ASESOR_CHAT_KEY(local),messages);
+    bottomRef.current?.scrollIntoView({behavior:"smooth"});
+  },[messages]);
 
-  const send = async () => {
-    if(!input.trim()||loading) return;
-    const msg=input.trim(); setInput("");
-    setMessages(p=>[...p,{role:"user",text:msg}]);
+  useEffect(()=>{ saveJSON(ASESOR_MEM_KEY,memoria); },[memoria]);
+
+  const addMemoria=(t)=>{
+    const v=(t||"").trim();
+    if(v&&!memoria.includes(v)) setMemoria(p=>[...p,v]);
+  };
+
+  const nuevaConversacion=()=>{
+    if(loading) return;
+    if(messages.length>1&&!confirm("¿Borrar esta conversación y empezar una nueva? La memoria se mantiene.")) return;
+    setMessages([greeting()]);
+  };
+
+  const send = async (texto) => {
+    const msg=(texto??input).trim();
+    if(!msg||loading) return;
+    setInput("");
+
+    // "recuerda: ..." guarda directo en la memoria
+    const rec=msg.match(/^recuerda(?:\s+que)?\s*[:,]?\s*(.+)$/i);
+    if(rec) addMemoria(rec[1]);
+
+    const history=[...messages.filter(m=>!m.error&&m.text),{role:"user",text:msg}];
+    setMessages(p=>[...p,{role:"user",text:msg},{role:"assistant",text:"",streaming:true}]);
     setLoading(true);
+
+    // La API exige que el historial empiece con un mensaje del usuario
+    let turns=history.slice(-ASESOR_MAX_TURNS);
+    while(turns.length&&turns[0].role!=="user") turns=turns.slice(1);
+    const apiMsgs=turns.map(m=>({role:m.role,content:m.text}));
+
     const ctx=buildContext(biz,local);
-    const sys=`Eres el consultor ejecutivo de confianza de Hector Maluenda, dueño de ${localName}.
-Tienes acceso completo al contexto del negocio:\n${ctx}\n\nEres directo, práctico y hablas en español chileno. Tratas a Hector de "tú". Das respuestas accionables basadas en los datos reales del negocio. Cubres todas las áreas: CEO, marketing, finanzas, RRHH, operaciones, legal y estrategia.`;
-    let aiText="";
-    setMessages(p=>[...p,{role:"assistant",text:"",streaming:true}]);
+    const mem=[...memoria,...(rec?[rec[1]]:[])];
+    const sys=`Eres el asesor personal de confianza de Hector Maluenda, dueño de Inversiones Alma SpA (locales Almíbar en Curicó y Pangoa en Talca). Ahora están hablando de ${localName}.
+
+CONTEXTO DEL NEGOCIO:
+${ctx}
+
+MEMORIA (cosas que Hector te pidió recordar sobre él, sus metas y preferencias):
+${mem.length?mem.map(m=>`- ${m}`).join("\n"):"(vacía)"}
+
+CÓMO TRABAJAS:
+- Hablas en español chileno y tratas a Hector de "tú". Eres directo, cálido y honesto, incluso cuando la respuesta no es la que quiere oír.
+- Recuerdas la conversación y das continuidad: retomas compromisos y temas anteriores.
+- Basas tus respuestas en los datos reales del negocio y en la memoria; si falta un dato clave, lo dices y preguntas.
+- Terminas con pasos concretos (qué, quién, cuándo) cuando la pregunta lo amerita.
+- Cubres todas las áreas: dirección, finanzas, marketing, RRHH, operaciones, legal y estrategia, además de la organización personal de Hector como dueño.
+- Si Hector te cuenta algo importante y permanente sobre sí mismo o sus metas, sugiérele guardarlo escribiendo "recuerda: ...".`;
+
+    let aiText=""; let failed=false;
     try {
-      await claude(sys,msg,t=>{
+      await claude(sys,apiMsgs,t=>{
         aiText=t;
         setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:t,streaming:true}; return u; });
-      });
-    } catch { aiText="Error al conectar. Intenta nuevamente."; }
-    setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:aiText,streaming:false}; return u; });
+      },2500);
+    } catch(e) { aiText=`Error al conectar (${e.message}). Intenta nuevamente.`; failed=true; }
+    setMessages(p=>{ const u=[...p]; u[u.length-1]={role:"assistant",text:aiText,streaming:false,...(failed?{error:true}:{})}; return u; });
     setLoading(false);
   };
 
   const suggestions=[
-    "Dame el diagnóstico general del negocio","¿Cuál es mi mayor riesgo hoy?",
-    "¿Qué debo hacer primero esta semana?","Ayúdame a mejorar la rentabilidad",
-    "¿Cómo gestiono mejor a mi equipo?","Analiza si mis precios son correctos",
+    "¿Qué debo hacer primero esta semana?","¿Cuál es mi mayor riesgo hoy?",
+    "Dame el diagnóstico general del negocio","Ayúdame a mejorar la rentabilidad",
+    "¿Cómo gestiono mejor a mi equipo?","Ayúdame a ordenar mis prioridades como dueño",
   ];
 
   return (
     <div className="fade-up" style={{display:"flex",flexDirection:"column",height:"calc(100vh - 200px)",minHeight:500,gap:16}}>
-      <div style={{background:C.blueDim,border:`1px solid #C0CFEE`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12}}>
-        <span style={{fontSize:20}}>🤖</span>
-        <div>
-          <div style={{fontSize:13,fontWeight:700,color:C.blue}}>Consultor Ejecutivo IA</div>
-          <div style={{fontSize:11,color:C.muted}}>Accede a todos los datos del negocio · Responde sobre cualquier área</div>
+      <div style={{background:C.blueDim,border:`1px solid #C0CFEE`,borderRadius:10,padding:"12px 16px",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+        <span style={{fontSize:20}}>🧑‍💼</span>
+        <div style={{flex:1,minWidth:180}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.blue}}>Asesor Personal IA</div>
+          <div style={{fontSize:11,color:C.muted}}>Recuerda la conversación · Usa los datos del negocio y tu memoria personal</div>
         </div>
+        <button className="btn-ghost btn-sm" onClick={()=>setShowMem(v=>!v)}>🧠 Memoria ({memoria.length})</button>
+        <button className="btn-ghost btn-sm" onClick={nuevaConversacion} disabled={loading}>＋ Nueva conversación</button>
       </div>
+
+      {showMem&&(
+        <div className="card" style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:10,padding:14}}>
+          <div style={{fontSize:12,color:C.textDim,marginBottom:10}}>Lo que el asesor sabe de ti en todas las conversaciones y ambos locales. También puedes escribir en el chat <b>recuerda: …</b></div>
+          {memoria.length===0&&<div style={{fontSize:12,color:C.muted,marginBottom:10}}>Aún no hay nada guardado. Ej.: «Mi meta 2027 es abrir un tercer local», «Prefiero respuestas cortas».</div>}
+          {memoria.map((m,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}>
+              <span style={{flex:1}}>• {m}</span>
+              <button className="btn-ghost btn-sm" onClick={()=>setMemoria(p=>p.filter((_,j)=>j!==i))} title="Olvidar">✕</button>
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,marginTop:10}}>
+            <input className="input" placeholder="Agregar algo que deba recordar..." value={memInput}
+              onChange={e=>setMemInput(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"){addMemoria(memInput);setMemInput("");}}} style={{flex:1}}/>
+            <button className="btn-primary" onClick={()=>{addMemoria(memInput);setMemInput("");}} disabled={!memInput.trim()}>Guardar</button>
+          </div>
+        </div>
+      )}
 
       <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10}}>
         {messages.map((m,i)=>(
-          <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
-            {m.role==="assistant"&&<span style={{fontSize:20,marginRight:8,flexShrink:0,alignSelf:"flex-end",marginBottom:2}}>🤖</span>}
+          <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",alignItems:"flex-end",gap:6}}>
+            {m.role==="assistant"&&<span style={{fontSize:20,marginRight:2,flexShrink:0,marginBottom:2}}>🧑‍💼</span>}
+            {m.role==="user"&&<button onClick={()=>addMemoria(m.text)} title="Guardar en memoria"
+              style={{background:"none",border:"none",cursor:"pointer",fontSize:13,opacity:memoria.includes(m.text)?1:.35}}>📌</button>}
             <div className={m.role==="user"?"chat-bubble-user":"chat-bubble-ai"}>
               {m.text}
               {m.streaming&&m.text&&<span style={{color:C.blueLight}}>▋</span>}
@@ -897,16 +975,16 @@ Tienes acceso completo al contexto del negocio:\n${ctx}\n\nEres directo, prácti
 
       {messages.length<=1&&(
         <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-          {suggestions.map((s,i)=><button key={i} className="btn-ghost btn-sm" style={{fontSize:12}} onClick={()=>setInput(s)}>{s}</button>)}
+          {suggestions.map((s,i)=><button key={i} className="btn-ghost btn-sm" style={{fontSize:12}} onClick={()=>send(s)}>{s}</button>)}
         </div>
       )}
 
       <div style={{display:"flex",gap:10}}>
-        <textarea className="input" rows={2} placeholder="Pregunta sobre cualquier aspecto del negocio..."
+        <textarea className="input" rows={2} placeholder='Escribe tu pregunta... (o "recuerda: ..." para guardar algo en la memoria)'
           value={input} onChange={e=>setInput(e.target.value)}
           onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
           style={{flex:1,resize:"none"}}/>
-        <button className="btn-primary" onClick={send} disabled={loading||!input.trim()} style={{alignSelf:"flex-end"}}>
+        <button className="btn-primary" onClick={()=>send()} disabled={loading||!input.trim()} style={{alignSelf:"flex-end"}}>
           {loading?<div className="spinner"/>:"→"}
         </button>
       </div>
@@ -1200,7 +1278,7 @@ const NAV = [
     {id:"importar",icon:"📥",label:"Importar Fudo"},
   ]},
   { group:"IA", items:[
-    {id:"consultor",icon:"🤖",label:"Consultor IA"},
+    {id:"consultor",icon:"🧑‍💼",label:"Asesor Personal"},
   ]},
 ];
 
@@ -1212,11 +1290,11 @@ const MODULE_COMPONENTS = {
 };
 const MODULE_LABELS = {
   ceo:"Dashboard CEO",local:"Mi Local",marketing:"Marketing",finanzas:"Finanzas",
-  rrhh:"RRHH",operaciones:"Operaciones",legal:"Legal",estrategia:"Estrategia",consultor:"Consultor IA",importar:"Importar Fudo"
+  rrhh:"RRHH",operaciones:"Operaciones",legal:"Legal",estrategia:"Estrategia",consultor:"Asesor Personal",importar:"Importar Fudo"
 };
 const MODULE_ICONS = {
   ceo:"📊",local:"🏪",marketing:"📣",finanzas:"💰",
-  rrhh:"👥",operaciones:"⚙️",legal:"⚖️",estrategia:"🧭",consultor:"🤖",importar:"📥"
+  rrhh:"👥",operaciones:"⚙️",legal:"⚖️",estrategia:"🧭",consultor:"🧑‍💼",importar:"📥"
 };
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
@@ -1224,7 +1302,7 @@ function App() {
   const [local,setLocal]=useState("almibar");
   const [module,setModule]=useState("ceo");
   const [biz,setBiz]=useState(INITIAL_BIZ);
-  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("alma_api_key")||"");
+  const [apiKey,setApiKey]=useState(()=>{ const k=localStorage.getItem("alma_api_key")||""; if(k) window.__ALMA_KEY__=k; return k; });
   const [showKeyInput,setShowKeyInput]=useState(()=>!localStorage.getItem("alma_api_key"));
 
   // Load SheetJS for Excel parsing
