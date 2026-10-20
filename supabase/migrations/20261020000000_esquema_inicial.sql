@@ -1,4 +1,4 @@
--- Alma Arriendos · esquema SaaS multi-empresa
+-- Qipo Arriendos · esquema SaaS multi-empresa
 -- Cada empresa cliente (corredora, administradora o propietario) es un "tenant".
 -- Los usuarios ven solo los datos de las empresas de las que son miembros (RLS).
 -- Los administradores de plataforma (Torre de Control HM) ven y administran todo.

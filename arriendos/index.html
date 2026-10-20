@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Arriendos · Inversiones Alma</title>
+  <title>Qipo Arriendos</title>
   <meta name="description" content="Gestión de propiedades, centros comerciales y arriendos con mapa, cobranza, multas y contratos"/>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230F1F4A'/><text y='.9em' font-size='75' x='12'>🏢</text></svg>"/>
 
@@ -342,7 +342,7 @@ async function cargarEmpresa(E) {
   return {
     empresa: { id: emp.id, nombre: emp.nombre, rut: vacio(emp.rut), direccion: vacio(emp.direccion), email: vacio(emp.email), telefono: vacio(emp.telefono), representante: vacio(emp.representante), rutRep: vacio(emp.rut_rep) },
     suscripcion: sus ? { planId: sus.plan_id, plan: sus.planes && sus.planes.nombre, maxUnidades: sus.planes && sus.planes.max_unidades, estado: sus.estado, pruebaHasta: sus.prueba_hasta, vigenteHasta: sus.vigente_hasta } : null,
-    uf: local.get("alma-uf") || { valor: 39800, fecha: "", auto: true },
+    uf: local.get("qipo-uf") || { valor: 39800, fecha: "", auto: true },
     usuarios: mies.map(m => ({ id: m.user_id, nombre: m.nombre, rol: m.rol, activo: m.activo })),
     invitaciones: invs,
     propiedades: props.map(p => ({
@@ -767,7 +767,7 @@ function datosEjemplo(hoy) {
         contrato: contrato("Jorge Pérez Soto", "15.678.901-2", "jorge.perez@correo.cl", "+56922222222", "", 1, 17, { cobrar: true, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 3 }, 1) }] },
     { id: uid(), tipo: "propiedad", nombre: "Oficina El Golf", direccion: "Av. Apoquindo 3000, of. 702", comuna: "Las Condes", ciudad: "Santiago", lat: -33.4152, lng: -70.6027, rol: "890-12", notas: "",
       arrendador: {}, unidades: [{ id: uid(), nombre: "Oficina 702", categoria: "oficina", m2: 85, dormitorios: 0, banos: 1, estacionamientos: 2, descripcion: "Oficina habilitada, 3 privados y sala de reuniones. Disponible inmediata.", precioUF: 32, fotos: [], contrato: null }] },
-    { id: uid(), tipo: "centro", nombre: "Strip Center Alma", direccion: "Av. Vicuña Mackenna 7110", comuna: "La Florida", ciudad: "Santiago", lat: -33.5205, lng: -70.5985, rol: "4455-01", notas: "Estacionamientos para clientes: 40.",
+    { id: uid(), tipo: "centro", nombre: "Strip Center Los Andes", direccion: "Av. Vicuña Mackenna 7110", comuna: "La Florida", ciudad: "Santiago", lat: -33.5205, lng: -70.5985, rol: "4455-01", notas: "Estacionamientos para clientes: 40.",
       arrendador: {}, unidades: [
         { id: uid(), nombre: "Local 1", categoria: "local", m2: 60, banos: 1, descripcion: "Esquina, alto flujo.", precioUF: 28, fotos: [],
           contrato: contrato("Farmacia Salud SpA", "76.111.222-3", "contacto@farmaciasalud.cl", "+56933333333", "Farmacia", 5, 28, { cobrar: true, tipo: "fija", monto: 1, diasGracia: 5, tope: 0 }, 0, 40) },
@@ -942,7 +942,7 @@ function PantallaCentrada({ children, ancho = 400 }) {
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: `linear-gradient(135deg, ${C.sidebar}, ${C.blueLight})` }}>
       <div className="card fade-up" style={{ width: "100%", maxWidth: ancho, padding: 28 }}>
         <div style={{ fontSize: 34 }}>🏢</div>
-        <div className="h1" style={{ marginTop: 6 }}>Alma Arriendos</div>
+        <div className="h1" style={{ marginTop: 6 }}>Qipo Arriendos</div>
         {children}
       </div>
     </div>
@@ -1053,7 +1053,7 @@ function Bienvenida({ sesionSb, empresas, esAdmin, onElegir, onCreada }) {
       ) : (
         <form onSubmit={crear} className="grid" style={{ gap: 12 }}>
           <div style={{ fontSize: 13 }}>Crea tu empresa para empezar. Tienes <b>14 días de prueba</b> del plan Corredor (hasta 50 unidades).</div>
-          <Campo label="Nombre de la empresa"><input className="input" value={f.empresa} onChange={e => setF({ ...f, empresa: e.target.value })} placeholder="Ej: Inversiones Alma SpA" autoFocus /></Campo>
+          <Campo label="Nombre de la empresa"><input className="input" value={f.empresa} onChange={e => setF({ ...f, empresa: e.target.value })} placeholder="Ej: Inversiones del Sur SpA" autoFocus /></Campo>
           <Campo label="RUT de la empresa (opcional)"><input className="input" value={f.rut} onChange={e => setF({ ...f, rut: e.target.value })} /></Campo>
           <Campo label="Tu nombre"><input className="input" value={f.nombre} onChange={e => setF({ ...f, nombre: e.target.value })} /></Campo>
           {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
@@ -1506,7 +1506,7 @@ function PropiedadForm({ inicial, onClose }) {
           <button key={k} type="button" className={"btn " + (p.tipo === k ? "btn-primary" : "btn-ghost")} onClick={() => cambiarTipo(k)}>{l}</button>)}
       </div>
       <div className="form-grid">
-        <Campo label="Nombre"><input className="input" value={p.nombre} onChange={e => upd("nombre", e.target.value)} placeholder={p.tipo === "centro" ? "Ej: Strip Center Alma" : "Ej: Casa Los Jardines"} /></Campo>
+        <Campo label="Nombre"><input className="input" value={p.nombre} onChange={e => upd("nombre", e.target.value)} placeholder={p.tipo === "centro" ? "Ej: Strip Center Los Andes" : "Ej: Casa Los Jardines"} /></Campo>
         <Campo label="Dirección"><input className="input" value={p.direccion} onChange={e => upd("direccion", e.target.value)} onKeyDown={e => e.key === "Enter" && (e.preventDefault(), buscarDireccion())} /></Campo>
         <Campo label="Comuna"><input className="input" value={p.comuna} onChange={e => upd("comuna", e.target.value)} /></Campo>
         <Campo label="Ciudad"><input className="input" value={p.ciudad} onChange={e => upd("ciudad", e.target.value)} /></Campo>
@@ -2247,7 +2247,7 @@ function ConfigView() {
       "Invitación creada", `Invitó a ${inv.nombre.trim()} (${email}) como ${inv.rol}`);
     setInv({ nombre: "", email: "", rol: "secretaria" });
   };
-  const mensajeInvitacion = i => `Hola ${i.nombre}, te invité a ${st.empresa.nombre} en Alma Arriendos. Crea tu cuenta con este correo (${i.email}) en: ${urlRetorno()}`;
+  const mensajeInvitacion = i => `Hola ${i.nombre}, te invité a ${st.empresa.nombre} en Qipo Arriendos. Crea tu cuenta con este correo (${i.email}) en: ${urlRetorno()}`;
   const cambiarClave = () => {
     if (clave.length < 8) return toast("La clave debe tener al menos 8 caracteres");
     accion(() => q(sb.auth.updateUser({ password: clave })), "Clave actualizada");
@@ -2422,7 +2422,7 @@ function App() {
     ]);
     const activas = ms.filter(m => m.activo);
     setEsAdmin(!!adm); setEmpresas(activas);
-    const guardada = local.get("alma-empresa");
+    const guardada = local.get("qipo-empresa");
     const elegida = activas.find(m => m.empresa_id === guardada) || (activas.length === 1 ? activas[0] : null);
     setEmpresaId(elegida ? elegida.empresa_id : null);
   }, [uidSesion]);
@@ -2446,7 +2446,7 @@ function App() {
 
   useEffect(() => {
     if (!empresaId) return;
-    local.set("alma-empresa", empresaId);
+    local.set("qipo-empresa", empresaId);
     setSt(null); recargar();
     const canalVivo = sb.channel("empresa-" + empresaId);
     TABLAS_EN_VIVO.forEach(t => canalVivo.on("postgres_changes", { event: "*", schema: "public", table: t, filter: `empresa_id=eq.${empresaId}` }, programarRecarga));
@@ -2467,7 +2467,7 @@ function App() {
     fn(n);
     if (accion) n.bitacora = [{ t: Date.now(), u: user ? user.nombre : "—", a: accion }, ...(n.bitacora || [])].slice(0, 1000);
     stRef.current = n; setSt(n);
-    if (JSON.stringify(n.uf) !== JSON.stringify(prev.uf)) local.set("alma-uf", n.uf);
+    if (JSON.stringify(n.uf) !== JSON.stringify(prev.uf)) local.set("qipo-uf", n.uf);
     pendientes.current++; setGuardando(g => g + 1);
     cola.current = cola.current
       .then(async () => {
@@ -2496,7 +2496,7 @@ function App() {
   if (error && !st) return <><style>{css}</style><Cargando error={error} onReintentar={() => setIntento(i => i + 1)} /></>;
   if (!empresas) return <><style>{css}</style><Cargando /></>;
   if (!empresaId) return <><style>{css}</style><Bienvenida sesionSb={sesionSb} empresas={empresas} esAdmin={esAdmin}
-    onElegir={setEmpresaId} onCreada={id => { local.set("alma-empresa", id); setIntento(i => i + 1); }} /></>;
+    onElegir={setEmpresaId} onCreada={id => { local.set("qipo-empresa", id); setIntento(i => i + 1); }} /></>;
   if (!st) return <><style>{css}</style><Cargando texto="Cargando propiedades…" /></>;
   if (!user) return <><style>{css}</style><Cargando error="Tu usuario está desactivado en esta empresa." onReintentar={() => setIntento(i => i + 1)} /></>;
 
@@ -2521,7 +2521,7 @@ function App() {
         <aside className={"sidebar" + (menu ? " open" : "")}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 12px" }}>
             <div style={{ width: 34, height: 34, borderRadius: 9, background: C.sidebarActive, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🏢</div>
-            <div><div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>Alma Arriendos</div><div style={{ color: "rgba(255,255,255,.4)", fontSize: 10.5 }}>{st.empresa.nombre}</div></div>
+            <div><div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>Qipo Arriendos</div><div style={{ color: "rgba(255,255,255,.4)", fontSize: 10.5 }}>{st.empresa.nombre}</div></div>
           </div>
           {grupos.map(g => (
             <div key={g}>
@@ -2536,7 +2536,7 @@ function App() {
           <div style={{ marginTop: "auto", padding: "12px 8px 0", borderTop: "1px solid rgba(255,255,255,.08)" }}>
             <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{user.nombre}</div>
             <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{user.rol === "dueno" ? "Dueño" : "Secretaria"}{esAdmin ? " · admin HM" : ""}</div>
-            {empresas.length > 1 && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("alma-empresa", null); setFicha(null); setEmpresaId(null); }}>⇄ Cambiar empresa</button>}
+            {empresas.length > 1 && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("qipo-empresa", null); setFicha(null); setEmpresaId(null); }}>⇄ Cambiar empresa</button>}
             <button className="nav-item" style={{ paddingLeft: 0 }} onClick={salir}>↩ Cerrar sesión</button>
           </div>
         </aside>
