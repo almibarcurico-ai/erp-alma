@@ -1,0 +1,2237 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Arriendos · Inversiones Alma</title>
+  <meta name="description" content="Gestión de propiedades, centros comerciales y arriendos con mapa, cobranza, multas y contratos"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230F1F4A'/><text y='.9em' font-size='75' x='12'>🏢</text></svg>"/>
+
+  <!-- Leaflet (mapa) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
+  <!-- React 18 -->
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel standalone for JSX -->
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+  <style>
+    body { margin: 0; padding: 0; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useRef, useEffect, useMemo, useCallback, useContext, createContext } = React;
+
+
+// ─── TOKENS ───────────────────────────────────────────────────────────────────
+const C = {
+  bg:"#F7F9FC", surface:"#FFFFFF", card:"#FFFFFF",
+  sidebar:"#0F1F4A", sidebarHover:"#1A3266", sidebarActive:"#2952C8",
+  border:"#E2E8F4", borderHover:"#93AEDD",
+  blue:"#1A3A8A", blueLight:"#2952C8", blueDim:"#EEF2FF",
+  text:"#0A1628", textDim:"#4A5878",
+  muted:"#8A9EC0", mutedLight:"#C8D4EC",
+  success:"#0A7A3E", successBg:"#EDFAF3",
+  warning:"#A05A08", warningBg:"#FFF7ED",
+  danger:"#8A1A1A", dangerBg:"#FFF0F0",
+  info:"#0A5A9A", infoBg:"#EFF7FF",
+};
+
+// Estados de cobro: el color se usa en el mapa, en las fichas y en las listas
+const EST = {
+  atrasado: { label:"Atrasado",     color:"#DC2626", bg:"#FEF2F2", ord:0 },
+  hoy:      { label:"Vence hoy",    color:"#EA580C", bg:"#FFF7ED", ord:1 },
+  proximo:  { label:"Por vencer",   color:"#D97706", bg:"#FFFBEB", ord:2 },
+  pendiente:{ label:"Pendiente",    color:"#2563EB", bg:"#EFF6FF", ord:3 },
+  pagado:   { label:"Pagado",       color:"#16A34A", bg:"#F0FDF4", ord:4 },
+  libre:    { label:"Desocupada",   color:"#7C3AED", bg:"#F5F3FF", ord:5 },
+};
+const DIAS_AVISO = 5;          // días antes del vencimiento en que pasa a "Por vencer"
+const DIAS_AVISO_TERMINO = 60; // aviso de contrato por terminar
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&family=Lora:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:${C.bg};color:${C.text};font-family:'Sora',sans-serif;min-height:100vh;font-size:14px}
+  ::-webkit-scrollbar{width:5px;height:5px}
+  ::-webkit-scrollbar-thumb{background:${C.mutedLight};border-radius:3px}
+  .mono{font-family:'JetBrains Mono',monospace}
+  .serif{font-family:'Lora',Georgia,serif}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes slideIn{from{opacity:0;transform:translateX(30px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes ring{0%{box-shadow:0 0 0 0 var(--c)}100%{box-shadow:0 0 0 12px transparent}}
+  .fade-up{animation:fadeUp .3s ease forwards}
+
+  /* LAYOUT */
+  .shell{display:flex;min-height:100vh}
+  .sidebar{width:228px;background:${C.sidebar};padding:18px 12px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;flex-shrink:0}
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+  .topbar{height:58px;background:#fff;border-bottom:1px solid ${C.border};display:flex;align-items:center;justify-content:space-between;padding:0 24px;gap:12px;position:sticky;top:0;z-index:500}
+  .content{padding:24px;flex:1}
+  .menu-btn{display:none}
+  @media (max-width: 900px){
+    .sidebar{position:fixed;left:0;top:0;z-index:2000;transform:translateX(-100%);transition:transform .2s}
+    .sidebar.open{transform:translateX(0);box-shadow:0 0 0 100vmax rgba(0,0,0,.35)}
+    .menu-btn{display:inline-flex}
+    .content{padding:16px}
+    .topbar{padding:0 16px}
+    .hide-sm{display:none !important}
+  }
+
+  /* NAV */
+  .nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:12.5px;font-weight:500;color:rgba(255,255,255,.6);transition:all .18s;border:none;background:transparent;width:100%;text-align:left;font-family:'Sora',sans-serif}
+  .nav-item:hover{background:${C.sidebarHover};color:#fff}
+  .nav-item.active{background:${C.sidebarActive};color:#fff;font-weight:600}
+  .nav-group-label{font-size:9.5px;font-weight:700;color:rgba(255,255,255,.3);letter-spacing:.12em;text-transform:uppercase;padding:4px 12px;margin-top:16px;margin-bottom:4px}
+  .nav-badge{margin-left:auto;background:#DC2626;color:#fff;border-radius:10px;font-size:10px;padding:1px 7px;font-weight:700}
+
+  /* CARDS */
+  .card{background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:20px}
+  .kpi-card{background:${C.surface};border:1px solid ${C.border};border-radius:12px;padding:18px;transition:all .2s}
+  .kpi-card:hover{border-color:${C.blueLight};box-shadow:0 4px 16px rgba(26,58,138,.08)}
+  .kpi-label{font-size:11px;font-weight:600;color:${C.textDim};text-transform:uppercase;letter-spacing:.08em}
+  .kpi-value{font-size:24px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums}
+  .kpi-sub{font-size:12px;color:${C.muted};margin-top:4px}
+  .grid{display:grid;gap:16px}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(min(200px,100%),1fr))}
+  .g2{grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr))}
+  .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .between{justify-content:space-between}
+  .h1{font-size:20px;font-weight:700}
+  .h2{font-size:14px;font-weight:700;margin-bottom:12px}
+  .dim{color:${C.textDim}}
+  .muted{color:${C.muted};font-size:12px}
+
+  /* INPUTS */
+  .input,.select,textarea.input{width:100%;background:${C.bg};border:1px solid ${C.border};border-radius:8px;padding:9px 12px;color:${C.text};font-family:'Sora',sans-serif;font-size:13px;outline:none;transition:border-color .2s}
+  .input:focus,.select:focus{border-color:${C.blueLight};background:#fff}
+  .input:disabled,.select:disabled{opacity:.6;cursor:not-allowed}
+  .label{font-size:10.5px;font-weight:600;color:${C.textDim};text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px;display:block}
+  .form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:12px}
+  .section-title{font-size:12px;font-weight:700;color:${C.blue};text-transform:uppercase;letter-spacing:.08em;margin:18px 0 10px;padding-bottom:6px;border-bottom:1px solid ${C.border}}
+  .switch{display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;user-select:none}
+  .switch input{width:16px;height:16px;accent-color:${C.blueLight}}
+
+  /* BUTTONS */
+  .btn{display:inline-flex;align-items:center;gap:6px;border-radius:8px;padding:8px 14px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:'Sora',sans-serif;transition:all .18s;border:1px solid transparent;white-space:nowrap;text-decoration:none}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn-primary{background:linear-gradient(135deg,${C.blue},${C.blueLight});color:#fff}
+  .btn-primary:hover:not(:disabled){filter:brightness(1.1);box-shadow:0 4px 14px rgba(26,58,138,.3)}
+  .btn-ghost{background:#fff;color:${C.textDim};border-color:${C.border}}
+  .btn-ghost:hover:not(:disabled){border-color:${C.blueLight};color:${C.blue}}
+  .btn-wa{background:#25D366;color:#fff}
+  .btn-wa:hover{filter:brightness(1.05)}
+  .btn-mail{background:#0A5A9A;color:#fff}
+  .btn-danger{background:#fff;color:#B91C1C;border-color:#FCA5A5}
+  .btn-danger:hover{background:#FEF2F2}
+  .btn-sm{padding:5px 10px;font-size:11.5px}
+  .icon-btn{background:transparent;border:none;cursor:pointer;font-size:18px;padding:4px 8px;border-radius:6px;color:${C.textDim}}
+  .icon-btn:hover{background:${C.bg}}
+
+  /* TAGS */
+  .tag{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;white-space:nowrap}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .live{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#16A34A}
+  .live .dot{background:#16A34A;animation:pulse 1.6s infinite}
+
+  /* TABLE */
+  .table-wrap{overflow-x:auto;border:1px solid ${C.border};border-radius:10px;background:#fff}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:${C.textDim};padding:10px 12px;background:${C.bg};border-bottom:1px solid ${C.border};white-space:nowrap}
+  td{padding:10px 12px;border-bottom:1px solid ${C.border};vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tr.click{cursor:pointer}
+  tr.click:hover td{background:${C.blueDim}}
+  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+  /* MODAL / DRAWER */
+  .overlay{position:fixed;inset:0;background:rgba(10,22,40,.45);z-index:3000;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow-y:auto}
+  .modal{background:#fff;border-radius:14px;width:100%;max-width:760px;box-shadow:0 20px 60px rgba(0,0,0,.25);animation:fadeUp .2s ease}
+  .modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid ${C.border}}
+  .modal-body{padding:20px}
+  .modal-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid ${C.border};flex-wrap:wrap}
+  .drawer-bg{position:fixed;inset:0;background:rgba(10,22,40,.3);z-index:2500}
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,100%);background:#fff;z-index:2600;overflow-y:auto;box-shadow:-10px 0 40px rgba(0,0,0,.15);animation:slideIn .22s ease}
+  .drawer-head{position:sticky;top:0;background:#fff;z-index:2;padding:16px 20px;border-bottom:1px solid ${C.border}}
+  .drawer-body{padding:16px 20px 40px}
+  .kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:13px}
+  .kv dt{color:${C.textDim};font-size:12px}
+  .kv dd{font-weight:500;word-break:break-word}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid ${C.border};margin:12px 0 0;overflow-x:auto}
+  .tab{padding:8px 12px;font-size:12.5px;font-weight:600;color:${C.textDim};cursor:pointer;border:none;background:none;border-bottom:2px solid transparent;font-family:'Sora',sans-serif;white-space:nowrap}
+  .tab.active{color:${C.blue};border-bottom-color:${C.blueLight}}
+
+  /* FOTOS */
+  .gallery{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:8px}
+  .gallery img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:8px;border:1px solid ${C.border};cursor:pointer}
+  .ph{position:relative}
+  .ph button{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:12px}
+  .cover{width:100%;height:160px;object-fit:cover;border-radius:10px 10px 0 0;display:block;background:${C.blueDim}}
+  .cover-empty{height:160px;display:flex;align-items:center;justify-content:center;font-size:42px;background:linear-gradient(135deg,${C.blueDim},#F5F3FF);border-radius:10px 10px 0 0}
+
+  /* MAPA */
+  .map{width:100%;border-radius:12px;border:1px solid ${C.border};overflow:hidden;z-index:1}
+  .pin{width:30px;height:30px;border-radius:50%;background:var(--c);border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:700;font-family:'Sora',sans-serif}
+  .pin.centro{border-radius:9px;width:36px;height:36px;font-size:13px}
+  .pin.alerta{animation:ring 1.4s infinite}
+  .leaflet-tooltip.tt{background:#fff;border:1px solid ${C.border};border-radius:10px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.15);font-family:'Sora',sans-serif;color:${C.text};min-width:200px}
+  .tt b{font-size:13px}
+  .tt .r{display:flex;justify-content:space-between;gap:12px;font-size:11.5px;margin-top:3px}
+  .tt .r span:first-child{color:${C.textDim}}
+  .legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:${C.textDim}}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:${C.text};color:#fff;padding:10px 18px;border-radius:10px;font-size:13px;z-index:5000;box-shadow:0 8px 24px rgba(0,0,0,.25);animation:fadeUp .2s}
+  .empty{padding:40px 20px;text-align:center;color:${C.muted}}
+  .alert-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid ${C.border};background:#fff}
+  .alert-row:hover{border-color:${C.blueLight}}
+  .bar-bg{height:10px;background:${C.bg};border-radius:6px;overflow:hidden;border:1px solid ${C.border}}
+  .bar-fg{height:100%;background:linear-gradient(90deg,#16A34A,#22C55E);transition:width .6s}
+  .doc-editor{border:1px solid ${C.border};border-radius:10px;padding:32px 40px;background:#fff;min-height:500px;font-family:'Lora',Georgia,serif;font-size:14px;line-height:1.7;outline:none}
+  .doc-editor h2{text-align:center;font-size:16px;margin-bottom:18px;font-family:'Sora',sans-serif}
+  .doc-editor p{margin-bottom:10px;text-align:justify}
+  @media (max-width:600px){ .doc-editor{padding:20px 16px} .kv{grid-template-columns:110px 1fr} }
+`;
+
+
+// ─── UTILIDADES ───────────────────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const pad = n => String(n).padStart(2, "0");
+const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseISO = s => { if (!s) return null; const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const sinHora = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const diffDias = (a, b) => Math.round((sinHora(a) - sinHora(b)) / 86400000);
+const periodoDe = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+const sumarMes = (p, n) => { const [y, m] = p.split("-").map(Number); const d = new Date(y, m - 1 + n, 1); return periodoDe(d); };
+const vencimiento = (p, dia) => { const [y, m] = p.split("-").map(Number); const ult = new Date(y, m, 0).getDate(); return new Date(y, m - 1, Math.min(dia || 1, ult)); };
+const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+const nombrePeriodo = p => { const [y, m] = p.split("-").map(Number); return `${MESES[m - 1]} ${y}`; };
+const fmtFecha = d => { if (!d) return "—"; const x = typeof d === "string" ? parseISO(d) : d; return `${pad(x.getDate())}-${pad(x.getMonth() + 1)}-${x.getFullYear()}`; };
+const fmtFechaLarga = d => { const x = typeof d === "string" ? parseISO(d) : d; return `${x.getDate()} de ${MESES[x.getMonth()]} de ${x.getFullYear()}`; };
+const fmtCLP = n => "$" + Math.round(n || 0).toLocaleString("es-CL");
+const fmtUF = n => (Number(n) || 0).toLocaleString("es-CL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " UF";
+const fmtMonto = (n, moneda) => moneda === "CLP" ? fmtCLP(n) : fmtUF(n);
+const aCLP = (n, moneda, uf) => moneda === "CLP" ? Number(n) || 0 : (Number(n) || 0) * uf;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const telWA = t => { let d = String(t || "").replace(/\D/g, ""); if (d.length === 9 && d[0] === "9") d = "56" + d; if (d.length === 8) d = "569" + d; return d; };
+const linkWA = (tel, msg) => `https://wa.me/${telWA(tel)}?text=${encodeURIComponent(msg)}`;
+const linkMail = (to, asunto, cuerpo) => `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+const CATEGORIAS = { casa:"Casa", depto:"Departamento", oficina:"Oficina", local:"Local comercial", bodega:"Bodega", terreno:"Terreno", otro:"Otro" };
+const ICONO = { casa:"🏠", depto:"🏢", oficina:"💼", local:"🏬", bodega:"📦", terreno:"🌳", otro:"📍", centro:"🛍️" };
+
+async function sha256(txt) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(txt));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function comprimirImagen(file, max = 1200, calidad = 0.72) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onerror = rej;
+    r.onload = () => {
+      const img = new Image();
+      img.onerror = rej;
+      img.onload = () => {
+        const s = Math.min(1, max / Math.max(img.width, img.height));
+        const cv = document.createElement("canvas");
+        cv.width = Math.round(img.width * s); cv.height = Math.round(img.height * s);
+        cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+        res(cv.toDataURL("image/jpeg", calidad));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+
+function imprimirHTML(titulo, cuerpo) {
+  const w = window.open("", "_blank");
+  if (!w) { alert("Permite las ventanas emergentes para imprimir o guardar en PDF."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(titulo)}</title>
+    <style>body{font-family:Georgia,serif;font-size:13px;line-height:1.65;max-width:760px;margin:30px auto;padding:0 24px;color:#111}
+    h1,h2{font-family:Arial,sans-serif;text-align:center}h2{font-size:16px}p{text-align:justify;margin:0 0 10px}
+    img{max-width:100%}.fotos{display:grid;grid-template-columns:1fr 1fr;gap:8px}.fotos img{width:100%;height:200px;object-fit:cover;border-radius:6px}
+    table{width:100%;border-collapse:collapse}td{padding:4px 6px;border-bottom:1px solid #ddd}td:first-child{color:#555;width:40%}
+    @media print{body{margin:0}}</style></head><body>${cuerpo}<script>setTimeout(()=>print(),400)<\/script></body></html>`);
+  w.document.close();
+}
+
+function descargarWord(nombre, html) {
+  const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><style>body{font-family:Georgia,serif;font-size:12pt;line-height:1.5}h2{text-align:center}p{text-align:justify}</style></head><body>${html}</body></html>`;
+  const blob = new Blob(["﻿", doc], { type: "application/msword" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = nombre.replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, "").trim() + ".doc";
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+
+// ─── ALMACENAMIENTO (IndexedDB, con sincronización entre pestañas) ────────────
+// Los datos viven en el navegador de este equipo. Para usar la plataforma desde
+// varios equipos a la vez hay que conectar un backend (ver README).
+const Store = {
+  KEY: "estado",
+  _db: null,
+  open() {
+    if (this._db) return Promise.resolve(this._db);
+    return new Promise((res, rej) => {
+      const r = indexedDB.open("alma-arriendos", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("kv");
+      r.onsuccess = () => { this._db = r.result; res(r.result); };
+      r.onerror = () => rej(r.error);
+    });
+  },
+  async load() {
+    try {
+      const db = await this.open();
+      return await new Promise((res, rej) => {
+        const q = db.transaction("kv").objectStore("kv").get(this.KEY);
+        q.onsuccess = () => res(q.result || null); q.onerror = () => rej(q.error);
+      });
+    } catch { try { return JSON.parse(localStorage.getItem("alma-arriendos") || "null"); } catch { return null; } }
+  },
+  async save(v) {
+    try {
+      const db = await this.open();
+      await new Promise((res, rej) => {
+        const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, this.KEY);
+        t.oncomplete = res; t.onerror = () => rej(t.error);
+      });
+    } catch { try { localStorage.setItem("alma-arriendos", JSON.stringify(v)); } catch { alert("No se pudo guardar: almacenamiento lleno. Exporta un respaldo y elimina fotos."); } }
+  },
+};
+const canal = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("alma-arriendos") : null;
+
+const sesion = {
+  get() { try { return sessionStorage.getItem("alma-arr-user"); } catch { return null; } },
+  set(id) { try { id ? sessionStorage.setItem("alma-arr-user", id) : sessionStorage.removeItem("alma-arr-user"); } catch {} },
+};
+
+async function obtenerUF() {
+  const r = await fetch("https://mindicador.cl/api/uf");
+  const j = await r.json();
+  const s = j.serie && j.serie[0];
+  if (!s) throw new Error("sin datos");
+  return { valor: s.valor, fecha: s.fecha.slice(0, 10) };
+}
+
+
+// ─── LÓGICA DE COBRO ──────────────────────────────────────────────────────────
+function periodosContrato(c, hoy) {
+  const ini = parseISO(c.inicio);
+  if (!ini) return [];
+  let p = periodoDe(ini);
+  if (vencimiento(p, c.diaPago) < ini) p = sumarMes(p, 1);
+  const fin = c.termino ? periodoDe(parseISO(c.termino)) : null;
+  const actual = periodoDe(hoy);
+  const out = [];
+  while (p <= actual && (!fin || p <= fin) && out.length < 600) { out.push(p); p = sumarMes(p, 1); }
+  return out;
+}
+
+// La multa se calcula en la moneda del contrato y solo si el arrendador decidió cobrarla.
+// Superados los días de gracia, se cuenta desde el día siguiente al vencimiento.
+function calcMulta(c, diasAtraso, periodo) {
+  const m = c.multa || {};
+  if (!m.cobrar || diasAtraso <= 0) return 0;
+  if ((c.multasCondonadas || {})[periodo]) return 0;
+  if (diasAtraso <= (Number(m.diasGracia) || 0)) return 0;
+  const monto = Number(m.monto) || 0, valor = Number(c.valor) || 0;
+  let x = 0;
+  if (m.tipo === "diaria") x = monto * diasAtraso;
+  else if (m.tipo === "diaria_pct") x = valor * monto / 100 * diasAtraso;
+  else if (m.tipo === "fija") x = monto;
+  else if (m.tipo === "pct") x = valor * monto / 100;
+  const tope = Number(m.tope) || 0;
+  return tope > 0 ? Math.min(x, tope) : x;
+}
+
+function descripcionMulta(c) {
+  const m = c.multa || {};
+  if (!m.cobrar) return "No se cobra multa";
+  const u = c.moneda === "CLP" ? "$" : "UF";
+  const monto = c.moneda === "CLP" ? fmtCLP(m.monto) : `${m.monto} UF`;
+  const base = {
+    diaria: `${monto} por cada día de atraso`,
+    diaria_pct: `${m.monto}% de la renta por cada día de atraso`,
+    fija: `${monto} fija por mes atrasado`,
+    pct: `${m.monto}% de la renta por mes atrasado`,
+  }[m.tipo] || "";
+  return base + (Number(m.diasGracia) ? `, después de ${m.diasGracia} días de gracia` : "") + (Number(m.tope) ? ` (tope ${c.moneda === "CLP" ? fmtCLP(m.tope) : m.tope + " " + u})` : "");
+}
+
+function calcUnidad(u, hoy, uf) {
+  const c = u.contrato;
+  if (!c) return { estado: "libre", deudas: [], canonCLP: 0, multa: 0, deudaCLP: 0 };
+  const pers = periodosContrato(c, hoy);
+  const pagados = new Set((c.pagos || []).map(p => p.periodo));
+  const deudas = [];
+  pers.forEach(p => {
+    if (pagados.has(p)) return;
+    const v = vencimiento(p, c.diaPago);
+    const dias = diffDias(hoy, v);
+    if (dias > 0) deudas.push({ periodo: p, venc: v, dias, multa: calcMulta(c, dias, p) });
+  });
+  const actual = periodoDe(hoy);
+  const vAct = vencimiento(actual, c.diaPago);
+  let estado, proxVenc = null;
+  if (deudas.length) estado = "atrasado";
+  else if (pagados.has(actual) || !pers.includes(actual)) {
+    estado = pagados.has(actual) ? "pagado" : "pendiente";
+    const sig = sumarMes(actual, 1);
+    proxVenc = vencimiento(pers.includes(actual) ? sig : (pers.length ? sig : periodoDe(parseISO(c.inicio))), c.diaPago);
+  } else {
+    const d = diffDias(vAct, hoy);
+    estado = d === 0 ? "hoy" : d <= DIAS_AVISO ? "proximo" : "pendiente";
+    proxVenc = vAct;
+  }
+  const canonCLP = aCLP(c.valor, c.moneda, uf);
+  const multa = deudas.reduce((s, d) => s + d.multa, 0);
+  const deudaCLP = aCLP(deudas.length * (Number(c.valor) || 0) + multa, c.moneda, uf);
+  const diasTermino = c.termino ? diffDias(parseISO(c.termino), hoy) : null;
+  return { estado, deudas, proxVenc, canonCLP, multa, deudaCLP, diasTermino, periodoActivo: pers.includes(actual) };
+}
+
+function calcPropiedad(p, hoy, uf) {
+  const us = p.unidades.map(u => ({ u, r: calcUnidad(u, hoy, uf) }));
+  const ocupadas = us.filter(x => x.u.contrato);
+  const peor = ocupadas.length ? ocupadas.reduce((a, b) => EST[a.r.estado].ord <= EST[b.r.estado].ord ? a : b).r.estado : "libre";
+  const cuenta = {};
+  us.forEach(x => { cuenta[x.r.estado] = (cuenta[x.r.estado] || 0) + 1; });
+  return { us, estado: peor, ocupadas: ocupadas.length, libres: us.length - ocupadas.length, cuenta,
+    canonCLP: us.reduce((s, x) => s + x.r.canonCLP, 0), deudaCLP: us.reduce((s, x) => s + x.r.deudaCLP, 0) };
+}
+
+// Todas las unidades arrendables en una lista plana
+function listarUnidades(st) {
+  const out = [];
+  st.propiedades.forEach(p => p.unidades.forEach(u => out.push({ p, u })));
+  return out;
+}
+const nombreUnidad = (p, u) => p.tipo === "centro" ? `${p.nombre} · ${u.nombre}` : p.nombre;
+
+function resumenFinanciero(st, hoy, uf) {
+  const actual = periodoDe(hoy);
+  let esperado = 0, cobrado = 0, porCobrar = 0, morosidad = 0, multas = 0, ocupadas = 0, total = 0;
+  const pagosMes = [], porMes = {};
+  for (let i = 5; i >= 0; i--) porMes[sumarMes(actual, -i)] = 0;
+  listarUnidades(st).forEach(({ p, u }) => {
+    total++;
+    const c = u.contrato;
+    const todos = [...(u.historial || []).flatMap(h => h.pagos || []), ...((c && c.pagos) || [])];
+    todos.forEach(pg => {
+      const mes = pg.fecha.slice(0, 7);
+      const m = (pg.montoCLP || 0) + (pg.multaCLP || 0);
+      if (mes in porMes) porMes[mes] += m;
+      if (mes === actual) { cobrado += m; pagosMes.push({ ...pg, p, u }); }
+    });
+    if (!c) return;
+    ocupadas++;
+    const r = calcUnidad(u, hoy, uf);
+    if (r.periodoActivo) {
+      esperado += r.canonCLP;
+      if (!(c.pagos || []).some(pg => pg.periodo === actual)) porCobrar += r.canonCLP;
+    }
+    morosidad += r.deudaCLP;
+    multas += aCLP(r.multa, c.moneda, uf);
+  });
+  pagosMes.sort((a, b) => (b.registrado || 0) - (a.registrado || 0));
+  return { esperado, cobrado, porCobrar, morosidad, multas, ocupadas, total, libres: total - ocupadas, pagosMes, porMes };
+}
+
+
+// ─── PLANTILLAS DE MENSAJES ───────────────────────────────────────────────────
+function mensajes(p, u, r, uf, empresa) {
+  const c = u.contrato;
+  if (!c) return [];
+  const a = c.arrendatario || {};
+  const nom = nombreUnidad(p, u);
+  const monto = c.moneda === "UF" ? `${fmtUF(c.valor)} (aprox. ${fmtCLP(c.valor * uf)} a la UF de hoy)` : fmtCLP(c.valor);
+  const firma = `\n\nSaludos cordiales,\n${empresa.nombre}${empresa.telefono ? "\n" + empresa.telefono : ""}`;
+  const out = [
+    { id: "recordatorio", titulo: "Recordatorio de pago",
+      asunto: `Recordatorio de pago arriendo - ${nom}`,
+      texto: `Estimado/a ${a.nombre || ""}:\n\nLe recordamos que el arriendo de ${nom} (${p.direccion}) por ${monto} vence el ${fmtFecha(r.proxVenc || vencimiento(periodoDe(new Date()), c.diaPago))}.\n\nPuede transferir a la cuenta habitual y enviarnos el comprobante por este medio.${firma}` },
+  ];
+  if (r.deudas.length) {
+    const det = r.deudas.map(d => `• ${nombrePeriodo(d.periodo)}: ${fmtMonto(c.valor, c.moneda)}${d.multa ? ` + multa ${fmtMonto(d.multa, c.moneda)} (${d.dias} días de atraso)` : ` (${d.dias} días de atraso)`}`).join("\n");
+    out.push({ id: "atraso", titulo: "Aviso de atraso",
+      asunto: `Arriendo atrasado - ${nom}`,
+      texto: `Estimado/a ${a.nombre || ""}:\n\nA la fecha registramos el siguiente saldo pendiente por el arriendo de ${nom}:\n\n${det}\n\nTotal adeudado: ${fmtCLP(r.deudaCLP)} (UF a ${fmtCLP(uf)}).\n\nLe solicitamos regularizar a la brevedad. Si ya realizó el pago, por favor envíenos el comprobante.${firma}` });
+  }
+  out.push({ id: "pago", titulo: "Confirmación de pago recibido",
+    asunto: `Pago recibido - ${nom}`,
+    texto: `Estimado/a ${a.nombre || ""}:\n\nConfirmamos la recepción de su pago del arriendo de ${nom}. Muchas gracias.${firma}` });
+  if (r.diasTermino != null && r.diasTermino <= DIAS_AVISO_TERMINO) {
+    out.push({ id: "termino", titulo: "Contrato por terminar",
+      asunto: `Término de contrato - ${nom}`,
+      texto: `Estimado/a ${a.nombre || ""}:\n\nLe informamos que su contrato de arriendo de ${nom} termina el ${fmtFecha(c.termino)}. Nos gustaría coordinar su renovación o la entrega del inmueble.${firma}` });
+  }
+  out.push({ id: "libre", titulo: "Mensaje libre", asunto: `Arriendo ${nom}`, texto: `Estimado/a ${a.nombre || ""}:\n\n${firma}` });
+  return out;
+}
+
+function textoFichaDisponible(p, u, uf) {
+  const lineas = [
+    `🏷️ ${CATEGORIAS[u.categoria] || "Propiedad"} en arriendo: ${nombreUnidad(p, u)}`,
+    `📍 ${p.direccion}${p.comuna ? ", " + p.comuna : ""}`,
+    u.m2 ? `📐 ${u.m2} m²` : null,
+    u.dormitorios ? `🛏️ ${u.dormitorios} dormitorios` : null,
+    u.banos ? `🚿 ${u.banos} baños` : null,
+    u.estacionamientos ? `🚗 ${u.estacionamientos} estacionamientos` : null,
+    u.precioUF ? `💰 ${fmtUF(u.precioUF)} mensuales (aprox. ${fmtCLP(u.precioUF * uf)})` : null,
+    u.descripcion ? `\n${u.descripcion}` : null,
+    `\n🗺️ Ubicación: https://www.google.com/maps?q=${p.lat},${p.lng}`,
+  ];
+  return lineas.filter(Boolean).join("\n");
+}
+
+
+// ─── PLANTILLAS DE CONTRATOS Y ANEXOS ────────────────────────────────────────
+// Borradores de referencia. Deben ser revisados por un abogado antes de firmarse.
+const TIPOS_DOC = {
+  contrato_hab: "Contrato de arriendo habitacional",
+  contrato_com: "Contrato de arriendo de local / oficina",
+  anexo_renta:  "Anexo: modificación de renta",
+  anexo_prorroga: "Anexo: prórroga de plazo",
+  anexo_libre:  "Anexo: modificación de cláusulas",
+  termino:      "Acta de término de mutuo acuerdo",
+  aviso_no_renov: "Carta de aviso de no renovación",
+  cobranza:     "Carta de cobranza",
+  entrega:      "Acta de entrega del inmueble",
+};
+
+function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
+  const e = st.empresa;
+  const arr = p.arrendador && p.arrendador.nombre ? p.arrendador : { nombre: e.nombre, rut: e.rut, domicilio: e.direccion, representante: e.representante, rutRep: e.rutRep };
+  const c = u.contrato || {};
+  const a = c.arrendatario || {};
+  const h = esc;
+  const ciudad = h(p.ciudad || "Santiago");
+  const fecha = fmtFechaLarga(hoy);
+  const renta = c.moneda === "CLP" ? `${fmtCLP(c.valor)} pesos` : `${String(c.valor || "___").replace(".", ",")} Unidades de Fomento`;
+  const inmueble = `${h(p.direccion)}${p.comuna ? ", comuna de " + h(p.comuna) : ""}${p.tipo === "centro" ? `, ${h(u.nombre)} del ${h(p.nombre)}` : ""}${p.rol ? ", rol de avalúo N° " + h(p.rol) : ""}`;
+  const partes = `En ${ciudad}, a ${fecha}, entre <b>${h(arr.nombre)}</b>, RUT ${h(arr.rut || "___")}${arr.representante ? `, representada por ${h(arr.representante)}, RUT ${h(arr.rutRep || "___")}` : ""}, con domicilio en ${h(arr.domicilio || e.direccion || "___")}, en adelante "el Arrendador"; y <b>${h(a.nombre || "___")}</b>, RUT ${h(a.rut || "___")}${a.representante ? `, representada por ${h(a.representante)}` : ""}, con domicilio en ${h(a.domicilio || "___")}, en adelante "el Arrendatario"`;
+  const firmas = `<p><br/><br/></p><table style="width:100%;text-align:center;border:none"><tr><td style="border:none;width:50%">______________________<br/>${h(arr.nombre)}<br/>Arrendador</td><td style="border:none">______________________<br/>${h(a.nombre || "Arrendatario")}<br/>Arrendatario</td></tr></table>`;
+  const multaTxt = c.multa && c.multa.cobrar
+    ? `En caso de no pago oportuno de la renta, el Arrendatario pagará a título de multa ${h(descripcionMulta(c))}, sin perjuicio del derecho del Arrendador a poner término al contrato.`
+    : `El retardo en el pago de la renta facultará al Arrendador para poner término al contrato de conformidad a la ley.`;
+  const comun = (destino) => `
+<p><b>PRIMERO: Inmueble.</b> El Arrendador da en arrendamiento al Arrendatario, quien acepta para sí, el inmueble ubicado en ${inmueble}${u.m2 ? `, de una superficie aproximada de ${h(u.m2)} m²` : ""}.</p>
+<p><b>SEGUNDO: Destino.</b> ${destino}</p>
+<p><b>TERCERO: Plazo.</b> El presente contrato rige desde el ${c.inicio ? fmtFechaLarga(c.inicio) : "___"} hasta el ${c.termino ? fmtFechaLarga(c.termino) : "___"}. Se renovará tácita y sucesivamente por períodos de un año si ninguna de las partes comunica a la otra su voluntad de no renovarlo, mediante carta certificada enviada con al menos 60 días de anticipación al vencimiento.</p>
+<p><b>CUARTO: Renta.</b> La renta mensual será de ${renta}${c.moneda === "UF" ? ", pagadera en su equivalente en pesos según el valor de la UF del día del pago efectivo" : ", reajustable anualmente según la variación del IPC"}. Se pagará por mes anticipado, a más tardar el día ${h(c.diaPago || "5")} de cada mes, mediante transferencia o depósito en la cuenta que indique el Arrendador.</p>
+<p><b>QUINTO: Multa por atraso.</b> ${multaTxt}</p>
+<p><b>SEXTO: Garantía.</b> El Arrendatario entrega en este acto la suma equivalente a ${c.garantia ? (c.moneda === "CLP" ? fmtCLP(c.garantia) : String(c.garantia).replace(".", ",") + " UF") : "___"} a título de garantía, para asegurar la restitución del inmueble en el estado en que lo recibe y el pago de rentas, consumos y eventuales daños. Será devuelta dentro de los 30 días siguientes a la restitución, debidamente reajustada, deducidos los montos que correspondan.</p>
+<p><b>SÉPTIMO: Gastos y servicios.</b> Serán de cargo del Arrendatario los consumos de luz, agua, gas, gastos comunes y demás servicios, debiendo exhibir los comprobantes de pago cuando el Arrendador lo solicite.</p>
+<p><b>OCTAVO: Prohibiciones.</b> Se prohíbe al Arrendatario subarrendar o ceder el contrato, destinar el inmueble a un fin distinto al convenido, y realizar modificaciones sin autorización previa y por escrito del Arrendador.</p>
+<p><b>NOVENO: Mantención.</b> El Arrendatario deberá mantener el inmueble en buen estado de conservación y aseo, siendo de su cargo las reparaciones locativas. Las mejoras que efectúe quedarán a beneficio del inmueble sin costo para el Arrendador, salvo pacto escrito en contrario.</p>
+<p><b>DÉCIMO: Visitas.</b> El Arrendatario se obliga a permitir el acceso al Arrendador o a quien éste designe para inspeccionar el inmueble, previo aviso, y a mostrarlo a interesados durante los últimos 60 días de vigencia del contrato.</p>
+<p><b>UNDÉCIMO: Restitución.</b> Al término del contrato, el Arrendatario restituirá el inmueble desocupado, con sus llaves y con los servicios pagados al día, levantándose un acta de entrega.</p>
+<p><b>DUODÉCIMO: Normativa.</b> En lo no previsto, este contrato se rige por la Ley N° 18.101, modificada por la Ley N° 21.461, y por las normas del Código Civil.</p>
+<p><b>DECIMOTERCERO: Domicilio.</b> Para todos los efectos legales, las partes fijan su domicilio en la ciudad de ${ciudad} y se someten a la competencia de sus tribunales.</p>
+<p>El presente contrato se firma en dos ejemplares de igual tenor, quedando uno en poder de cada parte.</p>`;
+
+  switch (tipo) {
+    case "contrato_hab":
+      return `<h2>CONTRATO DE ARRENDAMIENTO</h2><p>${partes}, se ha convenido el siguiente contrato de arrendamiento:</p>${comun("El inmueble será destinado exclusivamente a la habitación del Arrendatario y su familia.")}${firmas}`;
+    case "contrato_com":
+      return `<h2>CONTRATO DE ARRENDAMIENTO DE LOCAL COMERCIAL</h2><p>${partes}, se ha convenido el siguiente contrato de arrendamiento:</p>${comun(`El inmueble será destinado exclusivamente al giro de ${h(a.giro || "___")}, siendo de cargo del Arrendatario la obtención de patentes y permisos municipales, sanitarios u otros que su actividad requiera.`)}${firmas}`;
+    case "anexo_renta":
+      return `<h2>ANEXO DE CONTRATO DE ARRENDAMIENTO<br/>MODIFICACIÓN DE RENTA</h2><p>${partes}, exponen:</p>
+<p><b>PRIMERO:</b> Que con fecha ${c.inicio ? fmtFechaLarga(c.inicio) : "___"} las partes celebraron un contrato de arrendamiento respecto del inmueble ubicado en ${inmueble}.</p>
+<p><b>SEGUNDO:</b> Por el presente instrumento, las partes acuerdan modificar la renta mensual, la que a contar del ${extra.desde ? fmtFechaLarga(extra.desde) : "___"} será de ${h(extra.nuevoValor || "___")} ${c.moneda === "CLP" ? "pesos" : "Unidades de Fomento"}.</p>
+<p><b>TERCERO:</b> En todo lo no modificado por este anexo, se mantienen plenamente vigentes las cláusulas del contrato original.</p>${firmas}`;
+    case "anexo_prorroga":
+      return `<h2>ANEXO DE CONTRATO DE ARRENDAMIENTO<br/>PRÓRROGA DE PLAZO</h2><p>${partes}, exponen:</p>
+<p><b>PRIMERO:</b> Que con fecha ${c.inicio ? fmtFechaLarga(c.inicio) : "___"} las partes celebraron un contrato de arrendamiento respecto del inmueble ubicado en ${inmueble}, con vencimiento el ${c.termino ? fmtFechaLarga(c.termino) : "___"}.</p>
+<p><b>SEGUNDO:</b> Las partes acuerdan prorrogar el plazo del contrato hasta el ${extra.nuevoTermino ? fmtFechaLarga(extra.nuevoTermino) : "___"}${extra.nuevoValor ? `, con una renta mensual de ${h(extra.nuevoValor)} ${c.moneda === "CLP" ? "pesos" : "Unidades de Fomento"} a contar de la prórroga` : ""}.</p>
+<p><b>TERCERO:</b> En todo lo no modificado por este anexo, se mantienen plenamente vigentes las cláusulas del contrato original.</p>${firmas}`;
+    case "anexo_libre":
+      return `<h2>ANEXO DE CONTRATO DE ARRENDAMIENTO</h2><p>${partes}, exponen:</p>
+<p><b>PRIMERO:</b> Que con fecha ${c.inicio ? fmtFechaLarga(c.inicio) : "___"} las partes celebraron un contrato de arrendamiento respecto del inmueble ubicado en ${inmueble}.</p>
+<p><b>SEGUNDO:</b> Por el presente instrumento, las partes acuerdan: ${h(extra.texto || "[describa aquí la modificación acordada]")}</p>
+<p><b>TERCERO:</b> En todo lo no modificado por este anexo, se mantienen plenamente vigentes las cláusulas del contrato original.</p>${firmas}`;
+    case "termino":
+      return `<h2>ACTA DE TÉRMINO DE CONTRATO DE ARRENDAMIENTO<br/>DE MUTUO ACUERDO</h2><p>${partes}, exponen:</p>
+<p><b>PRIMERO:</b> Que las partes celebraron un contrato de arrendamiento respecto del inmueble ubicado en ${inmueble}.</p>
+<p><b>SEGUNDO:</b> Por el presente acto, las partes ponen término de mutuo acuerdo a dicho contrato con fecha ${extra.fechaTermino ? fmtFechaLarga(extra.fechaTermino) : "___"}, fecha en que el Arrendatario restituirá el inmueble.</p>
+<p><b>TERCERO:</b> La garantía será restituida conforme a lo pactado en el contrato, previa revisión del estado del inmueble y del pago de consumos y rentas.</p>${firmas}`;
+    case "aviso_no_renov":
+      return `<p style="text-align:right">${ciudad}, ${fecha}</p><p>Señor(a)<br/><b>${h(a.nombre || "___")}</b><br/>${h(a.domicilio || p.direccion)}<br/>Presente</p>
+<p><b>Ref.: Aviso de no renovación de contrato de arrendamiento.</b></p>
+<p>De mi consideración:</p><p>Por medio de la presente, y conforme a lo establecido en el contrato de arrendamiento del inmueble ubicado en ${inmueble}, comunico a usted mi voluntad de no renovar dicho contrato, el que terminará el ${c.termino ? fmtFechaLarga(c.termino) : "___"}, fecha en la cual deberá restituir el inmueble desocupado y con sus servicios al día.</p>
+<p>Sin otro particular, saluda atentamente,</p><p><br/>______________________<br/>${h(arr.nombre)}<br/>Arrendador</p>`;
+    case "cobranza": {
+      const r = calcUnidad(u, hoy, uf);
+      const filas = r.deudas.map(d => `<tr><td>${nombrePeriodo(d.periodo)}</td><td>${fmtMonto(c.valor, c.moneda)}</td><td>${d.dias} días</td><td>${d.multa ? fmtMonto(d.multa, c.moneda) : "—"}</td></tr>`).join("");
+      return `<p style="text-align:right">${ciudad}, ${fecha}</p><p>Señor(a)<br/><b>${h(a.nombre || "___")}</b><br/>Presente</p>
+<p><b>Ref.: Cobranza de rentas de arrendamiento impagas.</b></p>
+<p>De mi consideración:</p><p>Por medio de la presente le informo que, a la fecha, registra rentas impagas por el arrendamiento del inmueble ubicado en ${inmueble}, según el siguiente detalle:</p>
+<table border="1" cellpadding="6" style="border-collapse:collapse;width:100%"><tr><td><b>Período</b></td><td><b>Renta</b></td><td><b>Atraso</b></td><td><b>Multa</b></td></tr>${filas || "<tr><td colspan='4'>Sin deuda registrada</td></tr>"}</table>
+<p><br/>Total adeudado: <b>${fmtCLP(r.deudaCLP)}</b> (calculado con UF ${fmtCLP(uf)}).</p>
+<p>Le solicito regularizar esta situación dentro de un plazo de 10 días. En caso contrario, me veré en la obligación de ejercer las acciones que me confiere la Ley N° 18.101 y la Ley N° 21.461.</p>
+<p>Saluda atentamente,</p><p><br/>______________________<br/>${h(arr.nombre)}<br/>Arrendador</p>`;
+    }
+    case "entrega":
+      return `<h2>ACTA DE ENTREGA DE INMUEBLE</h2><p>${partes}, dejan constancia de lo siguiente:</p>
+<p><b>PRIMERO:</b> En este acto se hace entrega del inmueble ubicado en ${inmueble}.</p>
+<p><b>SEGUNDO: Estado del inmueble.</b> ${h(extra.texto || "[detalle del estado de muros, pisos, artefactos, llaves entregadas, lecturas de medidores de luz, agua y gas]")}</p>
+<p><b>TERCERO:</b> Ambas partes declaran conformidad con lo señalado en esta acta.</p>${firmas}`;
+    default: return "";
+  }
+}
+
+
+// ─── DATOS DE EJEMPLO ─────────────────────────────────────────────────────────
+function datosEjemplo(hoy) {
+  const d = hoy.getDate();
+  const inicio = toISO(new Date(hoy.getFullYear(), hoy.getMonth() - 8, 1));
+  const termino = (meses) => toISO(new Date(hoy.getFullYear(), hoy.getMonth() + meses, 0));
+  const actual = periodoDe(hoy);
+  const UFREF = 39800;
+  const pagosHasta = (diaPago, valor, hastaOffset) => {
+    const out = [];
+    for (let i = 8; i >= hastaOffset; i--) {
+      const per = sumarMes(actual, -i);
+      const v = vencimiento(per, diaPago);
+      if (v > hoy) break;
+      out.push({ id: uid(), periodo: per, fecha: toISO(v), ufDia: UFREF, montoCLP: Math.round(valor * UFREF), multaCLP: 0, metodo: "Transferencia", registradoPor: "Ejemplo", registrado: v.getTime() });
+    }
+    return out;
+  };
+  const contrato = (nombre, rut, email, tel, giro, diaPago, valor, multa, pagosOffset, terminoMeses = 16) => ({
+    arrendatario: { nombre, rut, email, telefono: tel, giro, domicilio: "" },
+    inicio, termino: termino(terminoMeses), diaPago, moneda: "UF", valor, garantia: valor,
+    reajuste: "UF (se reajusta automáticamente)",
+    multa: multa || { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
+    pagos: pagosHasta(diaPago, valor, pagosOffset), multasCondonadas: {},
+  });
+  const diaHoy = Math.min(d, 28);
+  const diaProx = d + 3 <= 28 ? d + 3 : 28;
+  return [
+    { id: uid(), tipo: "propiedad", nombre: "Casa Los Jardines", direccion: "Av. Irarrázaval 3450", comuna: "Ñuñoa", ciudad: "Santiago", lat: -33.4542, lng: -70.5946, rol: "1234-12", notas: "",
+      arrendador: {}, unidades: [{ id: uid(), nombre: "Casa", categoria: "casa", m2: 140, dormitorios: 4, banos: 2, estacionamientos: 2, descripcion: "Casa con patio y quincho.", precioUF: 24, fotos: [],
+        contrato: contrato("María González Rojas", "12.345.678-9", "maria.gonzalez@correo.cl", "+56911111111", "", 5, 24, null, 0) }] },
+    { id: uid(), tipo: "propiedad", nombre: "Depto. Providencia 1203", direccion: "Av. Providencia 1650, depto 1203", comuna: "Providencia", ciudad: "Santiago", lat: -33.4263, lng: -70.6143, rol: "567-89", notas: "",
+      arrendador: {}, unidades: [{ id: uid(), nombre: "Depto 1203", categoria: "depto", m2: 68, dormitorios: 2, banos: 2, estacionamientos: 1, descripcion: "Vista despejada, cerca de metro Pedro de Valdivia.", precioUF: 17, fotos: [],
+        contrato: contrato("Jorge Pérez Soto", "15.678.901-2", "jorge.perez@correo.cl", "+56922222222", "", 1, 17, { cobrar: true, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 3 }, 1) }] },
+    { id: uid(), tipo: "propiedad", nombre: "Oficina El Golf", direccion: "Av. Apoquindo 3000, of. 702", comuna: "Las Condes", ciudad: "Santiago", lat: -33.4152, lng: -70.6027, rol: "890-12", notas: "",
+      arrendador: {}, unidades: [{ id: uid(), nombre: "Oficina 702", categoria: "oficina", m2: 85, dormitorios: 0, banos: 1, estacionamientos: 2, descripcion: "Oficina habilitada, 3 privados y sala de reuniones. Disponible inmediata.", precioUF: 32, fotos: [], contrato: null }] },
+    { id: uid(), tipo: "centro", nombre: "Strip Center Alma", direccion: "Av. Vicuña Mackenna 7110", comuna: "La Florida", ciudad: "Santiago", lat: -33.5205, lng: -70.5985, rol: "4455-01", notas: "Estacionamientos para clientes: 40.",
+      arrendador: {}, unidades: [
+        { id: uid(), nombre: "Local 1", categoria: "local", m2: 60, banos: 1, descripcion: "Esquina, alto flujo.", precioUF: 28, fotos: [],
+          contrato: contrato("Farmacia Salud SpA", "76.111.222-3", "contacto@farmaciasalud.cl", "+56933333333", "Farmacia", 5, 28, { cobrar: true, tipo: "fija", monto: 1, diasGracia: 5, tope: 0 }, 0, 40) },
+        { id: uid(), nombre: "Local 2", categoria: "local", m2: 45, banos: 1, descripcion: "", precioUF: 20, fotos: [],
+          contrato: contrato("Café Aroma Ltda.", "77.222.333-4", "hola@cafearoma.cl", "+56944444444", "Cafetería", diaHoy, 20, { cobrar: true, tipo: "diaria_pct", monto: 0.5, diasGracia: 0, tope: 0 }, 1, 2) },
+        { id: uid(), nombre: "Local 3", categoria: "local", m2: 50, banos: 1, descripcion: "", precioUF: 22, fotos: [],
+          contrato: contrato("Peluquería Estilo", "78.333.444-5", "estilo@correo.cl", "+56955555555", "Peluquería", diaProx, 22, null, 1) },
+        { id: uid(), nombre: "Local 4", categoria: "local", m2: 70, banos: 1, descripcion: "Local amplio con vitrina doble, ideal para retail o restaurant.", precioUF: 30, fotos: [], contrato: null },
+        { id: uid(), nombre: "Local 5", categoria: "local", m2: 40, banos: 1, descripcion: "", precioUF: 18, fotos: [],
+          contrato: contrato("Minimarket Don Luis", "79.444.555-6", "donluis@correo.cl", "+56966666666", "Minimarket", 1, 18, { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 }, 2) },
+      ] },
+  ];
+}
+
+function estadoInicial(conEjemplo, hoy) {
+  return {
+    version: 1,
+    empresa: { nombre: "Inversiones Alma SpA", rut: "", direccion: "", email: "", telefono: "", representante: "", rutRep: "" },
+    uf: { valor: 39800, fecha: toISO(hoy), auto: true },
+    usuarios: [],
+    propiedades: conEjemplo ? datosEjemplo(hoy) : [],
+    documentos: [],
+    interesados: [],
+    bitacora: [],
+  };
+}
+
+
+// ─── CONTEXTO ─────────────────────────────────────────────────────────────────
+const Ctx = createContext(null);
+const useApp = () => useContext(Ctx);
+const PERMISOS_SECRETARIA = ["editar", "pagos", "contratos", "comunicar", "interesados"];
+const puede = (user, accion) => !!user && (user.rol === "dueno" || PERMISOS_SECRETARIA.includes(accion));
+
+
+// ─── COMPONENTES BASE ─────────────────────────────────────────────────────────
+function Badge({ estado, children }) {
+  const e = EST[estado];
+  return <span className="tag" style={{ background: e.bg, color: e.color, border: `1px solid ${e.color}33` }}><span className="dot" style={{ background: e.color }} />{children || e.label}</span>;
+}
+
+function Modal({ titulo, onClose, children, pie, ancho }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    // Escape cierra solo la ventana de más arriba
+    const f = e => { if (e.key !== "Escape") return; const todas = document.querySelectorAll(".overlay"); if (todas[todas.length - 1] === ref.current) onClose(); };
+    window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f);
+  }, [onClose]);
+  return ReactDOM.createPortal(
+    <div ref={ref} className="overlay" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={ancho ? { maxWidth: ancho } : null}>
+        <div className="modal-head"><div style={{ fontWeight: 700 }}>{titulo}</div><button className="icon-btn" onClick={onClose}>✕</button></div>
+        <div className="modal-body">{children}</div>
+        {pie && <div className="modal-foot">{pie}</div>}
+      </div>
+    </div>, document.body);
+}
+
+function Campo({ label, children, span }) {
+  return <div style={span ? { gridColumn: "1 / -1" } : null}><label className="label">{label}</label>{children}</div>;
+}
+
+function Kpi({ label, valor, sub, color, icono }) {
+  return (
+    <div className="kpi-card">
+      <div className="row between"><span className="kpi-label">{label}</span><span style={{ fontSize: 18 }}>{icono}</span></div>
+      <div className="kpi-value" style={color ? { color } : null}>{valor}</div>
+      {sub && <div className="kpi-sub">{sub}</div>}
+    </div>
+  );
+}
+
+function Leyenda() {
+  return <div className="legend">{Object.entries(EST).map(([k, e]) => <span key={k}><span className="dot" style={{ background: e.color }} />{e.label}</span>)}</div>;
+}
+
+function Contactar({ tel, email, mensaje, asunto, compacto }) {
+  return (
+    <div className="row">
+      {tel && <a className={"btn btn-wa" + (compacto ? " btn-sm" : "")} href={linkWA(tel, mensaje || "")} target="_blank" rel="noopener">WhatsApp</a>}
+      {email && <a className={"btn btn-mail" + (compacto ? " btn-sm" : "")} href={linkMail(email, asunto || "", mensaje || "")}>Correo</a>}
+      {!tel && !email && <span className="muted">Sin datos de contacto</span>}
+    </div>
+  );
+}
+
+
+// ─── MAPA ─────────────────────────────────────────────────────────────────────
+function tooltipHTML(p, cp, uf) {
+  const e = EST[cp.estado];
+  let h = `<b>${ICONO[p.tipo === "centro" ? "centro" : p.unidades[0]?.categoria] || "📍"} ${esc(p.nombre)}</b><div class="muted" style="margin:2px 0 6px">${esc(p.direccion)}${p.comuna ? ", " + esc(p.comuna) : ""}</div>`;
+  h += `<div class="r"><span>Estado</span><span style="color:${e.color};font-weight:700">${e.label}</span></div>`;
+  if (p.tipo === "centro") {
+    h += `<div class="r"><span>Locales</span><span>${p.unidades.length} (${cp.ocupadas} ocupados · ${cp.libres} libres)</span></div>`;
+    Object.entries(cp.cuenta).sort((a, b) => EST[a[0]].ord - EST[b[0]].ord).forEach(([k, n]) => { h += `<div class="r"><span>· ${EST[k].label}</span><span>${n}</span></div>`; });
+    if (cp.canonCLP) h += `<div class="r"><span>Renta mensual</span><span>${fmtCLP(cp.canonCLP)}</span></div>`;
+  } else {
+    const { u, r } = cp.us[0] || {};
+    if (u && u.contrato) {
+      const c = u.contrato;
+      h += `<div class="r"><span>Arrendatario</span><span>${esc(c.arrendatario?.nombre || "—")}</span></div>`;
+      h += `<div class="r"><span>Renta</span><span>${fmtMonto(c.valor, c.moneda)}</span></div>`;
+      h += `<div class="r"><span>Día de pago</span><span>${c.diaPago} de cada mes</span></div>`;
+      if (r.proxVenc) h += `<div class="r"><span>Próximo venc.</span><span>${fmtFecha(r.proxVenc)}</span></div>`;
+    } else if (u) {
+      h += `<div class="r"><span>Tipo</span><span>${CATEGORIAS[u.categoria] || "—"}</span></div>`;
+      if (u.m2) h += `<div class="r"><span>Superficie</span><span>${u.m2} m²</span></div>`;
+      if (u.precioUF) h += `<div class="r"><span>Precio publicado</span><span>${fmtUF(u.precioUF)}</span></div>`;
+    }
+  }
+  if (cp.deudaCLP) h += `<div class="r"><span>Deuda</span><span style="color:#DC2626;font-weight:700">${fmtCLP(cp.deudaCLP)}</span></div>`;
+  h += `<div class="muted" style="margin-top:6px">Clic para abrir la ficha</div>`;
+  return h;
+}
+
+function MapaBase({ puntos, onSelect, alto = 520, tooltips = true, elegir, onElegir, posicion, ajustar = true }) {
+  const ref = useRef(null), mapa = useRef(null), capa = useRef(null), marcaElegida = useRef(null);
+  const selRef = useRef(onSelect); selRef.current = onSelect;
+  const eligeRef = useRef(onElegir); eligeRef.current = onElegir;
+  const ajustado = useRef(false);
+
+  useEffect(() => {
+    const m = L.map(ref.current, { zoomControl: true, scrollWheelZoom: true }).setView([-33.45, -70.62], 11);
+    const calles = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(m);
+    const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, attribution: "© Esri" });
+    L.control.layers({ "Mapa": calles, "Satélite": sat }, null, { position: "topright" }).addTo(m);
+    capa.current = L.layerGroup().addTo(m);
+    m.on("click", e => eligeRef.current && eligeRef.current(e.latlng));
+    mapa.current = m;
+    const ro = new ResizeObserver(() => m.invalidateSize());
+    ro.observe(ref.current);
+    return () => { ro.disconnect(); m.remove(); };
+  }, []);
+
+  useEffect(() => {
+    const m = mapa.current, g = capa.current;
+    if (!m || !puntos) return;
+    g.clearLayers();
+    puntos.forEach(pt => {
+      const e = EST[pt.estado];
+      const alerta = pt.estado === "atrasado" || pt.estado === "hoy";
+      const icon = L.divIcon({ className: "", iconSize: pt.centro ? [36, 36] : [30, 30], iconAnchor: pt.centro ? [18, 18] : [15, 15],
+        html: `<div class="pin ${pt.centro ? "centro" : ""} ${alerta ? "alerta" : ""}" style="--c:${e.color}">${pt.etiqueta || ""}</div>` });
+      const mk = L.marker([pt.lat, pt.lng], { icon, riseOnHover: true });
+      if (tooltips && pt.tooltip) mk.bindTooltip(pt.tooltip, { direction: "auto", offset: [pt.centro ? 14 : 12, 0], className: "tt", opacity: 1 });
+      mk.on("click", () => selRef.current && selRef.current(pt.id));
+      mk.addTo(g);
+    });
+    if (ajustar && !ajustado.current && puntos.length) {
+      ajustado.current = true;
+      m.fitBounds(L.latLngBounds(puntos.map(p => [p.lat, p.lng])).pad(0.2), { maxZoom: 15 });
+    }
+  }, [puntos]);
+
+  useEffect(() => {
+    const m = mapa.current;
+    if (!m || !elegir) return;
+    if (marcaElegida.current) { m.removeLayer(marcaElegida.current); marcaElegida.current = null; }
+    if (posicion && posicion.lat != null && posicion.lng != null && !isNaN(posicion.lat)) {
+      const mk = L.marker([posicion.lat, posicion.lng], { draggable: true }).addTo(m);
+      mk.on("dragend", () => { const ll = mk.getLatLng(); eligeRef.current && eligeRef.current(ll); });
+      marcaElegida.current = mk;
+      if (!m.getBounds().contains([posicion.lat, posicion.lng])) m.setView([posicion.lat, posicion.lng], 16);
+    }
+  }, [posicion && posicion.lat, posicion && posicion.lng, elegir]);
+
+  useEffect(() => { if (elegir && posicion && posicion.centrar) mapa.current.setView([posicion.lat, posicion.lng], 17); }, [posicion && posicion.centrar]);
+
+  return <div ref={ref} className="map" style={{ height: alto, cursor: elegir ? "crosshair" : undefined }} />;
+}
+
+// soloLibres: pinta en morado y cuenta solo los locales desocupados
+function usePuntos(propiedades, filtro, soloLibres = false) {
+  const { hoy, uf } = useApp();
+  return useMemo(() => propiedades.filter(p => p.lat != null && p.lng != null).map(p => {
+    const cp = calcPropiedad(p, hoy, uf);
+    return { id: p.id, lat: Number(p.lat), lng: Number(p.lng), estado: soloLibres ? "libre" : cp.estado, centro: p.tipo === "centro",
+      etiqueta: p.tipo === "centro" ? (soloLibres ? cp.libres : p.unidades.length) : "", tooltip: tooltipHTML(p, cp, uf), cp, p };
+  }).filter(pt => !filtro || filtro(pt)), [propiedades, hoy, uf, filtro, soloLibres]);
+}
+
+
+// ─── LOGIN ────────────────────────────────────────────────────────────────────
+function Acceso({ st, onEntrar, onCrear }) {
+  const primera = !st || !st.usuarios.length;
+  const [f, setF] = useState({ nombre: "", usuario: "", clave: "", clave2: "", ejemplo: true });
+  const [error, setError] = useState("");
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  const enviar = async e => {
+    e.preventDefault(); setError("");
+    if (primera) {
+      if (!f.nombre || !f.usuario || f.clave.length < 6) return setError("Completa nombre, usuario y una clave de al menos 6 caracteres.");
+      if (f.clave !== f.clave2) return setError("Las claves no coinciden.");
+      onCrear({ id: uid(), nombre: f.nombre, usuario: f.usuario.trim().toLowerCase(), rol: "dueno", hash: await sha256(f.clave) }, f.ejemplo);
+    } else {
+      const u = st.usuarios.find(x => x.usuario === f.usuario.trim().toLowerCase());
+      if (!u || u.hash !== await sha256(f.clave)) return setError("Usuario o clave incorrectos.");
+      if (u.activo === false) return setError("Este usuario está desactivado.");
+      onEntrar(u);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: `linear-gradient(135deg, ${C.sidebar}, ${C.blueLight})` }}>
+      <form onSubmit={enviar} className="card fade-up" style={{ width: "100%", maxWidth: 400, padding: 28 }}>
+        <div style={{ fontSize: 34 }}>🏢</div>
+        <div className="h1" style={{ marginTop: 6 }}>Alma Arriendos</div>
+        <div className="muted" style={{ marginBottom: 20 }}>{primera ? "Primer ingreso: crea la cuenta del dueño" : "Ingresa con tu usuario"}</div>
+        <div className="grid" style={{ gap: 12 }}>
+          {primera && <Campo label="Nombre"><input className="input" value={f.nombre} onChange={e => set("nombre", e.target.value)} placeholder="Ej: Hernán Maluenda" /></Campo>}
+          <Campo label="Usuario"><input className="input" value={f.usuario} onChange={e => set("usuario", e.target.value)} autoComplete="username" autoFocus /></Campo>
+          <Campo label="Clave"><input className="input" type="password" value={f.clave} onChange={e => set("clave", e.target.value)} autoComplete={primera ? "new-password" : "current-password"} /></Campo>
+          {primera && <Campo label="Repetir clave"><input className="input" type="password" value={f.clave2} onChange={e => set("clave2", e.target.value)} autoComplete="new-password" /></Campo>}
+          {primera && <label className="switch"><input type="checkbox" checked={f.ejemplo} onChange={e => set("ejemplo", e.target.checked)} />Cargar propiedades de ejemplo para probar</label>}
+          {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
+          <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }}>{primera ? "Crear cuenta e ingresar" : "Ingresar"}</button>
+        </div>
+        {primera && <div className="muted" style={{ marginTop: 14 }}>La secretaria se agrega después desde Configuración → Usuarios.</div>}
+      </form>
+    </div>
+  );
+}
+
+
+// ─── PANEL DEL DUEÑO ──────────────────────────────────────────────────────────
+function GraficoIngresos({ porMes }) {
+  const ent = Object.entries(porMes);
+  const max = Math.max(1, ...ent.map(e => e[1]));
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 170, paddingTop: 10 }}>
+      {ent.map(([mes, v], i) => (
+        <div key={mes} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6, height: "100%", justifyContent: "flex-end" }}>
+          <div className="mono" style={{ fontSize: 10, color: C.textDim }}>{v ? (v / 1e6).toFixed(1) + "M" : "0"}</div>
+          <div style={{ width: "100%", maxWidth: 46, height: `${Math.max(2, v / max * 120)}px`, borderRadius: "6px 6px 2px 2px", background: i === ent.length - 1 ? `linear-gradient(180deg,${C.blueLight},${C.blue})` : C.mutedLight, transition: "height .5s" }} title={fmtCLP(v)} />
+          <div style={{ fontSize: 10.5, color: C.textDim }}>{MESES[Number(mes.slice(5)) - 1].slice(0, 3)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Dona({ ocupadas, libres }) {
+  const t = ocupadas + libres || 1, r = 42, cfr = 2 * Math.PI * r, f = ocupadas / t;
+  return (
+    <svg width="120" height="120" viewBox="0 0 120 120">
+      <circle cx="60" cy="60" r={r} fill="none" stroke={EST.libre.color} strokeWidth="16" opacity=".85" />
+      <circle cx="60" cy="60" r={r} fill="none" stroke={C.blueLight} strokeWidth="16" strokeDasharray={`${cfr * f} ${cfr}`} transform="rotate(-90 60 60)" />
+      <text x="60" y="58" textAnchor="middle" fontSize="20" fontWeight="700" fill={C.text}>{Math.round(f * 100)}%</text>
+      <text x="60" y="76" textAnchor="middle" fontSize="10" fill={C.textDim}>ocupación</text>
+    </svg>
+  );
+}
+
+function Alertas() {
+  const { st, hoy, uf, abrirFicha } = useApp();
+  const items = [];
+  listarUnidades(st).forEach(({ p, u }) => {
+    const r = calcUnidad(u, hoy, uf);
+    if (["atrasado", "hoy", "proximo"].includes(r.estado)) items.push({ p, u, r, ord: EST[r.estado].ord, txt: r.estado === "atrasado" ? `${r.deudas.length} mes(es) · ${fmtCLP(r.deudaCLP)}${r.multa ? " (incluye multa)" : ""}` : `Vence ${fmtFecha(r.proxVenc)} · ${fmtMonto(u.contrato.valor, u.contrato.moneda)}` });
+    if (r.diasTermino != null && r.diasTermino <= DIAS_AVISO_TERMINO) items.push({ p, u, r, ord: 3, termino: true, txt: r.diasTermino < 0 ? `Contrato venció el ${fmtFecha(u.contrato.termino)}` : `Contrato termina en ${r.diasTermino} días (${fmtFecha(u.contrato.termino)})` });
+  });
+  items.sort((a, b) => a.ord - b.ord);
+  if (!items.length) return <div className="empty">✅ Sin alertas: todos los arriendos están al día.</div>;
+  return (
+    <div className="grid" style={{ gap: 8 }}>
+      {items.slice(0, 12).map((x, i) => (
+        <div key={i} className="alert-row" onClick={() => abrirFicha(x.p.id, x.u.id)}>
+          {x.termino ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>📄 Contrato</span> : <Badge estado={x.r.estado} />}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(x.p, x.u)}</div>
+            <div className="muted">{x.u.contrato.arrendatario?.nombre} · {x.txt}</div>
+          </div>
+          <span className="muted">›</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PanelView() {
+  const { st, hoy, uf, user, abrirFicha, ir } = useApp();
+  const fin = useMemo(() => resumenFinanciero(st, hoy, uf), [st, hoy, uf]);
+  const [filtro, setFiltro] = useState("todas");
+  const filtroFn = useCallback(pt => filtro === "todas" || (filtro === "libres" ? pt.cp.libres > 0 : pt.cp.ocupadas > 0), [filtro]);
+  const puntos = usePuntos(st.propiedades, filtroFn, filtro === "libres");
+  const esDueno = user.rol === "dueno";
+  const pct = fin.esperado ? Math.min(100, fin.cobrado / fin.esperado * 100) : 0;
+  const libres = listarUnidades(st).filter(x => !x.u.contrato);
+
+  return (
+    <div className="grid fade-up" style={{ gap: 20 }}>
+      <div className="row between">
+        <div>
+          <div className="h1">{esDueno ? "Panel del dueño" : "Panel de trabajo"}</div>
+          <div className="muted">Hola {user.nombre.split(" ")[0]} · {fmtFechaLarga(hoy)}</div>
+        </div>
+        <span className="live"><span className="dot" />En vivo</span>
+      </div>
+
+      {esDueno && (
+        <div className="card" style={{ background: `linear-gradient(135deg, ${C.sidebar}, ${C.blue})`, color: "#fff", border: "none" }}>
+          <div className="row between">
+            <div>
+              <div style={{ fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", opacity: .7, fontWeight: 600 }}>Ingresos de {MESES[hoy.getMonth()]} · tiempo real</div>
+              <div style={{ fontSize: 34, fontWeight: 700, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>{fmtCLP(fin.cobrado)}</div>
+              <div style={{ opacity: .75, fontSize: 12.5 }}>de {fmtCLP(fin.esperado)} esperados · {Math.round(pct)}% recaudado</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ opacity: .7, fontSize: 11 }}>UF hoy</div>
+              <div className="mono" style={{ fontSize: 16 }}>{fmtCLP(uf)}</div>
+            </div>
+          </div>
+          <div style={{ height: 10, background: "rgba(255,255,255,.18)", borderRadius: 6, marginTop: 14, overflow: "hidden" }}>
+            <div className="bar-fg" style={{ width: pct + "%" }} />
+          </div>
+        </div>
+      )}
+
+      <div className="grid g4">
+        {esDueno && <Kpi label="Por cobrar este mes" valor={fmtCLP(fin.porCobrar)} sub="Rentas del mes aún no pagadas" icono="⏳" />}
+        {esDueno && <Kpi label="Morosidad" valor={fmtCLP(fin.morosidad)} sub={`Incluye ${fmtCLP(fin.multas)} en multas`} color={fin.morosidad ? "#DC2626" : null} icono="⚠️" />}
+        <Kpi label="Ocupadas" valor={`${fin.ocupadas} / ${fin.total}`} sub="Unidades con contrato vigente" icono="🔑" />
+        <Kpi label="Desocupadas" valor={fin.libres} sub="Disponibles para arrendar" color={EST.libre.color} icono="🏷️" />
+      </div>
+
+      <div className="card">
+        <div className="row between" style={{ marginBottom: 12 }}>
+          <div className="h2" style={{ margin: 0 }}>Mapa de propiedades</div>
+          <div className="row">
+            {[["todas", "Todas"], ["ocupadas", "Ocupadas"], ["libres", "Libres"]].map(([k, l]) =>
+              <button key={k} className={"btn btn-sm " + (filtro === k ? "btn-primary" : "btn-ghost")} onClick={() => setFiltro(k)}>{l}</button>)}
+          </div>
+        </div>
+        <MapaBase puntos={puntos} alto={420} onSelect={id => abrirFicha(id)} />
+        <div style={{ marginTop: 10 }}><Leyenda /></div>
+        <div className="muted" style={{ marginTop: 6 }}>Pasa el mouse sobre una propiedad para ver sus datos generales; haz clic para abrir la ficha.</div>
+      </div>
+
+      <div className="grid g2">
+        <div className="card"><div className="h2">Alertas de cobranza y contratos</div><Alertas /></div>
+        {esDueno ? (
+          <div className="card">
+            <div className="h2">Pagos recibidos este mes</div>
+            {fin.pagosMes.length ? (
+              <div className="grid" style={{ gap: 6 }}>
+                {fin.pagosMes.slice(0, 8).map(pg => (
+                  <div key={pg.id} className="alert-row" onClick={() => abrirFicha(pg.p.id, pg.u.id)}>
+                    <span style={{ fontSize: 18 }}>💵</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(pg.p, pg.u)}</div>
+                      <div className="muted">{fmtFecha(pg.fecha)} · {pg.metodo} · registró {pg.registradoPor}</div>
+                    </div>
+                    <div className="num" style={{ fontWeight: 700, color: C.success }}>{fmtCLP(pg.montoCLP + (pg.multaCLP || 0))}</div>
+                  </div>
+                ))}
+              </div>
+            ) : <div className="empty">Aún no hay pagos registrados este mes.</div>}
+          </div>
+        ) : (
+          <div className="card"><div className="h2">Desocupadas</div><ListaLibres libres={libres} /></div>
+        )}
+      </div>
+
+      {esDueno && (
+        <div className="grid g2">
+          <div className="card"><div className="h2">Ingresos últimos 6 meses</div><GraficoIngresos porMes={fin.porMes} /></div>
+          <div className="card">
+            <div className="row between"><div className="h2" style={{ margin: 0 }}>Libres y ocupadas</div><button className="btn btn-ghost btn-sm" onClick={() => ir("disponibles")}>Ver disponibles</button></div>
+            <div className="row" style={{ gap: 20, marginTop: 10, flexWrap: "nowrap" }}>
+              <Dona ocupadas={fin.ocupadas} libres={fin.libres} />
+              <div style={{ flex: 1, minWidth: 0 }}><ListaLibres libres={libres} max={5} /></div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ListaLibres({ libres, max = 8 }) {
+  const { abrirFicha } = useApp();
+  if (!libres.length) return <div className="empty">No hay unidades desocupadas.</div>;
+  return (
+    <div className="grid" style={{ gap: 6 }}>
+      {libres.slice(0, max).map(({ p, u }) => (
+        <div key={u.id} className="alert-row" onClick={() => abrirFicha(p.id, u.id)}>
+          <span style={{ fontSize: 18 }}>{ICONO[u.categoria] || "📍"}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(p, u)}</div>
+            <div className="muted">{p.comuna} · {u.m2 ? u.m2 + " m² · " : ""}{u.precioUF ? fmtUF(u.precioUF) : "sin precio"}</div>
+          </div>
+        </div>
+      ))}
+      {libres.length > max && <div className="muted">y {libres.length - max} más…</div>}
+    </div>
+  );
+}
+
+
+// ─── MAPA (vista completa) ────────────────────────────────────────────────────
+function MapaView() {
+  const { st, abrirFicha, user } = useApp();
+  const [estado, setEstado] = useState("");
+  const [q, setQ] = useState("");
+  const [editar, setEditar] = useState(null);
+  const filtro = useCallback(pt => {
+    if (estado && !(pt.estado === estado || pt.cp.cuenta[estado])) return false;
+    if (q) { const s = q.toLowerCase(); return [pt.p.nombre, pt.p.direccion, pt.p.comuna, ...pt.p.unidades.map(u => u.contrato?.arrendatario?.nombre)].some(x => (x || "").toLowerCase().includes(s)); }
+    return true;
+  }, [estado, q]);
+  const puntos = usePuntos(st.propiedades, filtro);
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div className="row between">
+        <div className="h1">Mapa</div>
+        <div className="row">
+          <input className="input" style={{ width: 220 }} placeholder="Buscar propiedad, comuna, arrendatario…" value={q} onChange={e => setQ(e.target.value)} />
+          <select className="select" style={{ width: 170 }} value={estado} onChange={e => setEstado(e.target.value)}>
+            <option value="">Todos los estados</option>
+            {Object.entries(EST).map(([k, e]) => <option key={k} value={k}>{e.label}</option>)}
+          </select>
+          {puede(user, "editar") && <button className="btn btn-primary" onClick={() => setEditar({})}>+ Agregar</button>}
+        </div>
+      </div>
+      <MapaBase puntos={puntos} alto="calc(100vh - 200px)" onSelect={id => abrirFicha(id)} />
+      <Leyenda />
+      {editar && <PropiedadForm inicial={null} onClose={() => setEditar(null)} />}
+    </div>
+  );
+}
+
+
+// ─── LISTADO DE PROPIEDADES ───────────────────────────────────────────────────
+function PropiedadesView() {
+  const { st, hoy, uf, abrirFicha, user } = useApp();
+  const [q, setQ] = useState("");
+  const [nueva, setNueva] = useState(false);
+  const filas = st.propiedades.map(p => ({ p, cp: calcPropiedad(p, hoy, uf) }))
+    .filter(({ p }) => !q || [p.nombre, p.direccion, p.comuna].some(x => (x || "").toLowerCase().includes(q.toLowerCase())));
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div className="row between">
+        <div className="h1">Propiedades y centros comerciales</div>
+        <div className="row">
+          <input className="input" style={{ width: 220 }} placeholder="Buscar…" value={q} onChange={e => setQ(e.target.value)} />
+          {puede(user, "editar") && <button className="btn btn-primary" onClick={() => setNueva(true)}>+ Agregar propiedad</button>}
+        </div>
+      </div>
+      {!filas.length ? <div className="card empty">Aún no hay propiedades. Agrega la primera con el botón “Agregar propiedad”.</div> : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Propiedad</th><th>Tipo</th><th className="hide-sm">Comuna</th><th>Unidades</th><th>Estado</th><th className="num">Renta mensual</th><th className="num hide-sm">Deuda</th></tr></thead>
+            <tbody>
+              {filas.map(({ p, cp }) => (
+                <tr key={p.id} className="click" onClick={() => abrirFicha(p.id)}>
+                  <td><div style={{ fontWeight: 600 }}>{ICONO[p.tipo === "centro" ? "centro" : p.unidades[0]?.categoria]} {p.nombre}</div><div className="muted">{p.direccion}</div></td>
+                  <td>{p.tipo === "centro" ? "Centro comercial" : CATEGORIAS[p.unidades[0]?.categoria]}</td>
+                  <td className="hide-sm">{p.comuna}</td>
+                  <td>{p.tipo === "centro" ? `${cp.ocupadas}/${p.unidades.length} ocupados` : (cp.ocupadas ? "Ocupada" : "Libre")}</td>
+                  <td><Badge estado={cp.estado} /></td>
+                  <td className="num">{cp.canonCLP ? fmtCLP(cp.canonCLP) : "—"}</td>
+                  <td className="num hide-sm" style={{ color: cp.deudaCLP ? "#DC2626" : null, fontWeight: cp.deudaCLP ? 700 : 400 }}>{cp.deudaCLP ? fmtCLP(cp.deudaCLP) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {nueva && <PropiedadForm inicial={null} onClose={() => setNueva(false)} />}
+    </div>
+  );
+}
+
+
+// ─── FORMULARIOS ──────────────────────────────────────────────────────────────
+const contratoVacio = () => ({
+  arrendatario: { nombre: "", rut: "", email: "", telefono: "", giro: "", domicilio: "", representante: "" },
+  inicio: toISO(new Date()), termino: toISO(new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate() - 1)),
+  diaPago: 5, moneda: "UF", valor: "", garantia: "", reajuste: "UF (se reajusta automáticamente)",
+  multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
+  pagos: [], multasCondonadas: {},
+});
+const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], contrato: null });
+
+function Fotos({ fotos, onChange, editable = true }) {
+  const [ver, setVer] = useState(null);
+  const subir = async e => {
+    const files = Array.from(e.target.files || []);
+    const nuevas = [];
+    for (const f of files) { try { nuevas.push(await comprimirImagen(f)); } catch {} }
+    onChange([...(fotos || []), ...nuevas]);
+    e.target.value = "";
+  };
+  return (
+    <div>
+      <div className="gallery">
+        {(fotos || []).map((src, i) => (
+          <div key={i} className="ph">
+            <img src={src} onClick={() => setVer(src)} alt="" />
+            {editable && <button type="button" onClick={() => onChange(fotos.filter((_, j) => j !== i))}>✕</button>}
+          </div>
+        ))}
+        {editable && (
+          <label style={{ border: `2px dashed ${C.border}`, borderRadius: 8, aspectRatio: "4/3", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.muted, fontSize: 12, textAlign: "center" }}>
+            + Agregar fotos<input type="file" accept="image/*" multiple hidden onChange={subir} />
+          </label>
+        )}
+      </div>
+      {!editable && !(fotos || []).length && <div className="muted">Sin fotos.</div>}
+      {ver && ReactDOM.createPortal(<div className="overlay" style={{ alignItems: "center" }} onClick={() => setVer(null)}><img src={ver} style={{ maxWidth: "95%", maxHeight: "90vh", borderRadius: 10 }} alt="" /></div>, document.body)}
+    </div>
+  );
+}
+
+function UnidadEditor({ value: u, onChange, esLocal }) {
+  const { user } = useApp();
+  const upd = (k, v) => onChange({ ...u, [k]: v });
+  const c = u.contrato;
+  const updC = (k, v) => onChange({ ...u, contrato: { ...c, [k]: v } });
+  const updA = (k, v) => updC("arrendatario", { ...c.arrendatario, [k]: v });
+  const updM = (k, v) => updC("multa", { ...c.multa, [k]: v });
+  const esDueno = user.rol === "dueno";
+  const unidadMoneda = c && c.moneda === "CLP" ? "$" : "UF";
+
+  return (
+    <div>
+      <div className="section-title">Datos de la {esLocal ? "unidad / local" : "propiedad"}</div>
+      <div className="form-grid">
+        {esLocal && <Campo label="Nombre o número"><input className="input" value={u.nombre} onChange={e => upd("nombre", e.target.value)} placeholder="Ej: Local 12" /></Campo>}
+        <Campo label="Tipo">
+          <select className="select" value={u.categoria} onChange={e => upd("categoria", e.target.value)}>
+            {Object.entries(CATEGORIAS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </Campo>
+        <Campo label="Superficie (m²)"><input className="input" type="number" value={u.m2} onChange={e => upd("m2", e.target.value)} /></Campo>
+        {!esLocal && <Campo label="Dormitorios"><input className="input" type="number" value={u.dormitorios} onChange={e => upd("dormitorios", e.target.value)} /></Campo>}
+        <Campo label="Baños"><input className="input" type="number" value={u.banos} onChange={e => upd("banos", e.target.value)} /></Campo>
+        <Campo label="Estacionamientos"><input className="input" type="number" value={u.estacionamientos} onChange={e => upd("estacionamientos", e.target.value)} /></Campo>
+        <Campo label="Precio publicado (UF)"><input className="input" type="number" step="0.01" value={u.precioUF} onChange={e => upd("precioUF", e.target.value)} /></Campo>
+        <Campo label="Descripción" span><textarea className="input" rows={2} value={u.descripcion} onChange={e => upd("descripcion", e.target.value)} placeholder="Características para enviar a interesados" /></Campo>
+      </div>
+      <div className="section-title">Fotos</div>
+      <Fotos fotos={u.fotos} onChange={f => upd("fotos", f)} />
+
+      <div className="section-title row between">
+        <span>Arriendo</span>
+        <label className="switch" style={{ textTransform: "none", letterSpacing: 0, color: C.text, fontWeight: 500 }}>
+          <input type="checkbox" checked={!!c} onChange={e => upd("contrato", e.target.checked ? contratoVacio() : null)} />
+          {c ? "Ocupada (con contrato)" : "Desocupada"}
+        </label>
+      </div>
+      {c && (
+        <>
+          <div className="label" style={{ marginTop: 4 }}>Arrendatario</div>
+          <div className="form-grid">
+            <Campo label="Nombre o razón social"><input className="input" value={c.arrendatario.nombre} onChange={e => updA("nombre", e.target.value)} /></Campo>
+            <Campo label="RUT"><input className="input" value={c.arrendatario.rut} onChange={e => updA("rut", e.target.value)} placeholder="12.345.678-9" /></Campo>
+            <Campo label="Correo"><input className="input" type="email" value={c.arrendatario.email} onChange={e => updA("email", e.target.value)} /></Campo>
+            <Campo label="Teléfono / WhatsApp"><input className="input" value={c.arrendatario.telefono} onChange={e => updA("telefono", e.target.value)} placeholder="+56 9 1234 5678" /></Campo>
+            <Campo label="Domicilio"><input className="input" value={c.arrendatario.domicilio} onChange={e => updA("domicilio", e.target.value)} /></Campo>
+            <Campo label={esLocal ? "Giro" : "Representante / aval"}>{esLocal
+              ? <input className="input" value={c.arrendatario.giro} onChange={e => updA("giro", e.target.value)} />
+              : <input className="input" value={c.arrendatario.representante} onChange={e => updA("representante", e.target.value)} />}</Campo>
+          </div>
+          <div className="label" style={{ marginTop: 14 }}>Condiciones del arriendo</div>
+          <div className="form-grid">
+            <Campo label="Inicio"><input className="input" type="date" value={c.inicio} onChange={e => updC("inicio", e.target.value)} /></Campo>
+            <Campo label="Término"><input className="input" type="date" value={c.termino} onChange={e => updC("termino", e.target.value)} /></Campo>
+            <Campo label="Día de pago (1-31)"><input className="input" type="number" min="1" max="31" value={c.diaPago} onChange={e => updC("diaPago", Math.max(1, Math.min(31, Number(e.target.value) || 1)))} /></Campo>
+            <Campo label="Moneda">
+              <select className="select" value={c.moneda} onChange={e => updC("moneda", e.target.value)}>
+                <option value="UF">UF</option><option value="CLP">Pesos (CLP)</option>
+              </select>
+            </Campo>
+            <Campo label={`Renta mensual (${unidadMoneda})`}><input className="input" type="number" step="0.01" value={c.valor} onChange={e => updC("valor", e.target.value)} /></Campo>
+            <Campo label={`Garantía (${unidadMoneda})`}><input className="input" type="number" step="0.01" value={c.garantia} onChange={e => updC("garantia", e.target.value)} /></Campo>
+          </div>
+          <div className="card" style={{ marginTop: 14, background: c.multa.cobrar ? C.warningBg : C.bg, padding: 14 }}>
+            <div className="row between">
+              <div style={{ fontWeight: 700, fontSize: 13 }}>Multa por atraso</div>
+              <label className="switch" title={esDueno ? "" : "Solo el dueño decide si se cobra la multa"}>
+                <input type="checkbox" checked={!!c.multa.cobrar} disabled={!esDueno} onChange={e => updM("cobrar", e.target.checked)} />
+                {c.multa.cobrar ? "Se cobra automáticamente" : "No se cobra"}
+              </label>
+            </div>
+            <div className="muted" style={{ margin: "4px 0 10px" }}>Según lo acordado en el contrato. Al vencer la fecha (más los días de gracia) la multa se suma sola a la deuda. {!esDueno && "Solo el dueño puede activarla o desactivarla."}</div>
+            <div className="form-grid">
+              <Campo label="Tipo de multa">
+                <select className="select" value={c.multa.tipo} onChange={e => updM("tipo", e.target.value)}>
+                  <option value="diaria">Monto por día de atraso</option>
+                  <option value="diaria_pct">% de la renta por día</option>
+                  <option value="fija">Monto fijo por mes atrasado</option>
+                  <option value="pct">% de la renta por mes atrasado</option>
+                </select>
+              </Campo>
+              <Campo label={c.multa.tipo.includes("pct") ? "Porcentaje (%)" : `Monto (${unidadMoneda})`}><input className="input" type="number" step="0.01" value={c.multa.monto} onChange={e => updM("monto", e.target.value)} /></Campo>
+              <Campo label="Días de gracia"><input className="input" type="number" min="0" value={c.multa.diasGracia} onChange={e => updM("diasGracia", e.target.value)} /></Campo>
+              <Campo label={`Tope por mes (${unidadMoneda}, 0 = sin tope)`}><input className="input" type="number" step="0.01" value={c.multa.tope} onChange={e => updM("tope", e.target.value)} /></Campo>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PropiedadForm({ inicial, onClose }) {
+  const { st, update, toast, user } = useApp();
+  const [p, setP] = useState(() => inicial ? structuredClone(inicial) : {
+    id: uid(), tipo: "propiedad", nombre: "", direccion: "", comuna: "", ciudad: "Santiago", lat: null, lng: null, rol: "", notas: "",
+    arrendador: { nombre: "", rut: "", email: "", telefono: "", domicilio: "" }, unidades: [unidadVacia()],
+  });
+  const [localEdit, setLocalEdit] = useState(null);
+  const [buscando, setBuscando] = useState(false);
+  const [centrar, setCentrar] = useState(0);
+  const upd = (k, v) => setP(x => ({ ...x, [k]: v }));
+  const updArr = (k, v) => setP(x => ({ ...x, arrendador: { ...(x.arrendador || {}), [k]: v } }));
+
+  const cambiarTipo = t => setP(x => ({ ...x, tipo: t, unidades: t === "centro"
+    ? (x.unidades.length === 1 && !x.unidades[0].contrato && !x.unidades[0].m2 ? [] : x.unidades.map((u, i) => ({ ...u, nombre: u.nombre === "Unidad principal" ? `Local ${i + 1}` : u.nombre })))
+    : (x.unidades.length ? [x.unidades[0]] : [unidadVacia()]) }));
+
+  const buscarDireccion = async () => {
+    const q = [p.direccion, p.comuna, p.ciudad, "Chile"].filter(Boolean).join(", ");
+    if (!p.direccion) return toast("Escribe la dirección primero");
+    setBuscando(true);
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=cl&q=${encodeURIComponent(q)}`, { headers: { "Accept-Language": "es" } });
+      const j = await r.json();
+      if (j[0]) { setP(x => ({ ...x, lat: Number(Number(j[0].lat).toFixed(6)), lng: Number(Number(j[0].lon).toFixed(6)) })); setCentrar(Date.now()); toast("Ubicación encontrada. Ajusta el marcador si es necesario."); }
+      else toast("No se encontró la dirección. Haz clic en el mapa para ubicarla.");
+    } catch { toast("No se pudo buscar. Haz clic en el mapa para ubicarla."); }
+    setBuscando(false);
+  };
+
+  const guardar = () => {
+    if (!p.nombre.trim()) return toast("Falta el nombre de la propiedad");
+    if (p.lat == null || p.lng == null || isNaN(p.lat) || isNaN(p.lng)) return toast("Ubica la propiedad en el mapa (busca la dirección o haz clic en el mapa)");
+    if (p.tipo === "centro" && !p.unidades.length) return toast("Agrega al menos un local");
+    const malos = p.unidades.filter(u => u.contrato && (!u.contrato.arrendatario.nombre || !u.contrato.valor));
+    if (malos.length) return toast(`Completa arrendatario y renta en: ${malos.map(u => u.nombre).join(", ")}`);
+    const lat = Number(p.lat), lng = Number(p.lng);
+    update(s => {
+      const i = s.propiedades.findIndex(x => x.id === p.id);
+      const limpio = { ...p, lat, lng };
+      if (i >= 0) s.propiedades[i] = limpio; else s.propiedades.push(limpio);
+    }, `${inicial ? "Editó" : "Agregó"} ${p.tipo === "centro" ? "centro comercial" : "propiedad"} "${p.nombre}"`);
+    toast("Guardado");
+    onClose();
+  };
+
+  return (
+    <Modal titulo={inicial ? `Editar: ${inicial.nombre}` : "Nueva propiedad o centro comercial"} onClose={onClose} ancho={880}
+      pie={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-primary" onClick={guardar}>Guardar</button></>}>
+      <div className="row" style={{ marginBottom: 14 }}>
+        {[["propiedad", "🏠 Propiedad individual"], ["centro", "🛍️ Centro comercial / edificio con locales"]].map(([k, l]) =>
+          <button key={k} type="button" className={"btn " + (p.tipo === k ? "btn-primary" : "btn-ghost")} onClick={() => cambiarTipo(k)}>{l}</button>)}
+      </div>
+      <div className="form-grid">
+        <Campo label="Nombre"><input className="input" value={p.nombre} onChange={e => upd("nombre", e.target.value)} placeholder={p.tipo === "centro" ? "Ej: Strip Center Alma" : "Ej: Casa Los Jardines"} /></Campo>
+        <Campo label="Dirección"><input className="input" value={p.direccion} onChange={e => upd("direccion", e.target.value)} onKeyDown={e => e.key === "Enter" && (e.preventDefault(), buscarDireccion())} /></Campo>
+        <Campo label="Comuna"><input className="input" value={p.comuna} onChange={e => upd("comuna", e.target.value)} /></Campo>
+        <Campo label="Ciudad"><input className="input" value={p.ciudad} onChange={e => upd("ciudad", e.target.value)} /></Campo>
+        <Campo label="Rol SII"><input className="input" value={p.rol} onChange={e => upd("rol", e.target.value)} /></Campo>
+      </div>
+
+      <div className="section-title">Ubicación (coordenadas)</div>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button type="button" className="btn btn-ghost" onClick={buscarDireccion} disabled={buscando}>{buscando ? "Buscando…" : "📍 Buscar dirección en el mapa"}</button>
+        <div style={{ width: 130 }}><input className="input" placeholder="Latitud" value={p.lat ?? ""} onChange={e => upd("lat", e.target.value === "" ? null : Number(e.target.value))} /></div>
+        <div style={{ width: 130 }}><input className="input" placeholder="Longitud" value={p.lng ?? ""} onChange={e => upd("lng", e.target.value === "" ? null : Number(e.target.value))} /></div>
+        <span className="muted">o haz clic en el mapa / arrastra el marcador</span>
+      </div>
+      <MapaBase puntos={[]} alto={260} tooltips={false} ajustar={false} elegir
+        posicion={{ lat: p.lat, lng: p.lng, centrar }}
+        onElegir={ll => setP(x => ({ ...x, lat: Number(ll.lat.toFixed(6)), lng: Number(ll.lng.toFixed(6)) }))} />
+
+      <div className="section-title">Arrendador / propietario {user.rol === "dueno" ? "" : ""}</div>
+      <div className="muted" style={{ marginBottom: 8 }}>Déjalo vacío si el arrendador es {st.empresa.nombre}.</div>
+      <div className="form-grid">
+        <Campo label="Nombre"><input className="input" value={p.arrendador?.nombre || ""} onChange={e => updArr("nombre", e.target.value)} placeholder={st.empresa.nombre} /></Campo>
+        <Campo label="RUT"><input className="input" value={p.arrendador?.rut || ""} onChange={e => updArr("rut", e.target.value)} /></Campo>
+        <Campo label="Correo"><input className="input" value={p.arrendador?.email || ""} onChange={e => updArr("email", e.target.value)} /></Campo>
+        <Campo label="Teléfono / WhatsApp"><input className="input" value={p.arrendador?.telefono || ""} onChange={e => updArr("telefono", e.target.value)} /></Campo>
+      </div>
+
+      {p.tipo === "propiedad" ? (
+        <UnidadEditor value={p.unidades[0]} onChange={u => setP(x => ({ ...x, unidades: [u] }))} />
+      ) : (
+        <>
+          <div className="section-title row between"><span>Locales ({p.unidades.length})</span>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setLocalEdit(unidadVacia("local", `Local ${p.unidades.length + 1}`))}>+ Agregar local</button>
+          </div>
+          {!p.unidades.length ? <div className="muted">Agrega los locales del centro comercial.</div> : (
+            <div className="table-wrap"><table>
+              <thead><tr><th>Local</th><th>m²</th><th>Arrendatario</th><th className="num">Renta</th><th></th></tr></thead>
+              <tbody>{p.unidades.map(u => (
+                <tr key={u.id} className="click" onClick={() => setLocalEdit(structuredClone(u))}>
+                  <td style={{ fontWeight: 600 }}>{u.nombre}</td><td>{u.m2 || "—"}</td>
+                  <td>{u.contrato ? u.contrato.arrendatario.nombre : <Badge estado="libre" />}</td>
+                  <td className="num">{u.contrato ? fmtMonto(u.contrato.valor, u.contrato.moneda) : "—"}</td>
+                  <td className="num"><button type="button" className="btn btn-ghost btn-sm">Editar</button></td>
+                </tr>))}
+              </tbody></table></div>
+          )}
+        </>
+      )}
+      <div className="section-title">Notas internas</div>
+      <textarea className="input" rows={2} value={p.notas} onChange={e => upd("notas", e.target.value)} />
+
+      {localEdit && (
+        <Modal titulo={`Local: ${localEdit.nombre}`} onClose={() => setLocalEdit(null)} ancho={760}
+          pie={<>
+            {p.unidades.some(x => x.id === localEdit.id) && user.rol === "dueno" &&
+              <button className="btn btn-danger" style={{ marginRight: "auto" }} onClick={() => { if (confirm("¿Eliminar este local?")) { setP(x => ({ ...x, unidades: x.unidades.filter(u => u.id !== localEdit.id) })); setLocalEdit(null); } }}>Eliminar local</button>}
+            <button className="btn btn-ghost" onClick={() => setLocalEdit(null)}>Cancelar</button>
+            <button className="btn btn-primary" onClick={() => { setP(x => { const i = x.unidades.findIndex(u => u.id === localEdit.id); const us = [...x.unidades]; if (i >= 0) us[i] = localEdit; else us.push(localEdit); return { ...x, unidades: us }; }); setLocalEdit(null); }}>Listo</button>
+          </>}>
+          <UnidadEditor value={localEdit} onChange={setLocalEdit} esLocal />
+        </Modal>
+      )}
+    </Modal>
+  );
+}
+
+
+// ─── REGISTRO DE PAGO ─────────────────────────────────────────────────────────
+function PagoModal({ p, u, onClose }) {
+  const { update, hoy, uf, user, toast } = useApp();
+  const c = u.contrato;
+  const r = calcUnidad(u, hoy, uf);
+  const pagados = new Set((c.pagos || []).map(x => x.periodo));
+  const actual = periodoDe(hoy);
+  const opciones = [...new Set([...r.deudas.map(d => d.periodo), actual, sumarMes(actual, 1)])].filter(x => !pagados.has(x));
+  const [f, setF] = useState(() => ({ periodo: opciones[0] || actual, fecha: toISO(hoy), ufDia: Math.round(uf * 100) / 100, metodo: "Transferencia", obs: "", condonar: false }));
+  const fechaPago = parseISO(f.fecha) || hoy;
+  const diasAtraso = diffDias(fechaPago, vencimiento(f.periodo, c.diaPago));
+  const multa = f.condonar ? 0 : calcMulta(c, diasAtraso, f.periodo);
+  const montoCLP = Math.round(aCLP(c.valor, c.moneda, Number(f.ufDia)));
+  const multaCLP = Math.round(aCLP(multa, c.moneda, Number(f.ufDia)));
+  const [ajuste, setAjuste] = useState(null);
+  const totalSugerido = montoCLP + multaCLP;
+  const total = ajuste == null ? totalSugerido : Number(ajuste) || 0;
+
+  const guardar = () => {
+    update(s => {
+      const uu = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id);
+      const cc = uu.contrato;
+      if (f.condonar) cc.multasCondonadas = { ...(cc.multasCondonadas || {}), [f.periodo]: true };
+      const mClp = Math.min(multaCLP, Math.max(0, total - montoCLP));
+      cc.pagos = [...(cc.pagos || []), { id: uid(), periodo: f.periodo, fecha: f.fecha, ufDia: Number(f.ufDia), montoCLP: total - mClp, multaCLP: mClp, metodo: f.metodo, obs: f.obs, registradoPor: user.nombre, registrado: Date.now() }];
+    }, `Registró pago de ${nombrePeriodo(f.periodo)} en "${nombreUnidad(p, u)}" por ${fmtCLP(total)}${f.condonar ? " (multa condonada)" : ""}`);
+    toast("Pago registrado");
+    onClose();
+  };
+
+  return (
+    <Modal titulo={`Registrar pago · ${nombreUnidad(p, u)}`} onClose={onClose} ancho={560}
+      pie={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-primary" onClick={guardar} disabled={!opciones.length}>Registrar {fmtCLP(total)}</button></>}>
+      <div className="form-grid">
+        <Campo label="Mes que paga">
+          <select className="select" value={f.periodo} onChange={e => setF({ ...f, periodo: e.target.value })}>
+            {opciones.map(o => <option key={o} value={o}>{nombrePeriodo(o)}{r.deudas.some(d => d.periodo === o) ? " (atrasado)" : ""}</option>)}
+          </select>
+        </Campo>
+        <Campo label="Fecha de pago"><input className="input" type="date" value={f.fecha} onChange={e => setF({ ...f, fecha: e.target.value })} /></Campo>
+        {c.moneda === "UF" && <Campo label="Valor UF del día"><input className="input" type="number" step="0.01" value={f.ufDia} onChange={e => setF({ ...f, ufDia: e.target.value })} /></Campo>}
+        <Campo label="Medio de pago">
+          <select className="select" value={f.metodo} onChange={e => setF({ ...f, metodo: e.target.value })}>
+            {["Transferencia", "Depósito", "Efectivo", "Cheque", "Tarjeta", "Otro"].map(m => <option key={m}>{m}</option>)}
+          </select>
+        </Campo>
+      </div>
+      <div className="card" style={{ marginTop: 14, background: C.bg, padding: 14 }}>
+        <dl className="kv">
+          <dt>Renta</dt><dd>{fmtMonto(c.valor, c.moneda)} = {fmtCLP(montoCLP)}</dd>
+          <dt>Vencimiento</dt><dd>{fmtFecha(vencimiento(f.periodo, c.diaPago))} {diasAtraso > 0 ? <span style={{ color: "#DC2626" }}>· {diasAtraso} días de atraso</span> : ""}</dd>
+          <dt>Multa</dt><dd>{c.multa?.cobrar ? (multa ? `${fmtMonto(multa, c.moneda)} = ${fmtCLP(multaCLP)}` : "$0") : "No se cobra"} </dd>
+        </dl>
+        {c.multa?.cobrar && calcMulta(c, diasAtraso, f.periodo) > 0 && (
+          <label className="switch" style={{ marginTop: 10 }} title={user.rol !== "dueno" ? "Solo el dueño puede condonar multas" : ""}>
+            <input type="checkbox" checked={f.condonar} disabled={user.rol !== "dueno"} onChange={e => setF({ ...f, condonar: e.target.checked })} />
+            Condonar multa de este mes {user.rol !== "dueno" && <span className="muted">(solo dueño)</span>}
+          </label>
+        )}
+      </div>
+      <div className="form-grid" style={{ marginTop: 14 }}>
+        <Campo label="Monto recibido (CLP)"><input className="input" type="number" value={ajuste ?? totalSugerido} onChange={e => setAjuste(e.target.value)} /></Campo>
+        <Campo label="Observación"><input className="input" value={f.obs} onChange={e => setF({ ...f, obs: e.target.value })} placeholder="N° de transferencia, etc." /></Campo>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ─── COMUNICAR (WhatsApp / correo) ────────────────────────────────────────────
+function ComunicarModal({ p, u, onClose, inicial }) {
+  const { st, hoy, uf, update } = useApp();
+  const r = calcUnidad(u, hoy, uf);
+  const lista = mensajes(p, u, r, uf, st.empresa);
+  const [sel, setSel] = useState(inicial && lista.some(m => m.id === inicial) ? inicial : (r.deudas.length ? "atraso" : "recordatorio"));
+  const m = lista.find(x => x.id === sel) || lista[0];
+  const [texto, setTexto] = useState(m.texto);
+  const [destino, setDestino] = useState("arrendatario");
+  useEffect(() => { setTexto((lista.find(x => x.id === sel) || lista[0]).texto); }, [sel]);
+  const a = u.contrato.arrendatario || {};
+  const arr = p.arrendador && (p.arrendador.telefono || p.arrendador.email) ? p.arrendador : { nombre: st.empresa.nombre, telefono: st.empresa.telefono, email: st.empresa.email };
+  const dest = destino === "arrendatario" ? a : arr;
+  const registrar = canalTxt => update(() => {}, `Envió "${m.titulo}" por ${canalTxt} a ${dest.nombre || destino} (${nombreUnidad(p, u)})`);
+
+  return (
+    <Modal titulo="Contactar" onClose={onClose} ancho={620}>
+      <div className="form-grid">
+        <Campo label="Destinatario">
+          <select className="select" value={destino} onChange={e => setDestino(e.target.value)}>
+            <option value="arrendatario">Arrendatario: {a.nombre}</option>
+            <option value="arrendador">Arrendador: {arr.nombre}</option>
+          </select>
+        </Campo>
+        <Campo label="Plantilla">
+          <select className="select" value={sel} onChange={e => setSel(e.target.value)}>
+            {lista.map(x => <option key={x.id} value={x.id}>{x.titulo}</option>)}
+          </select>
+        </Campo>
+        <Campo label="Mensaje" span><textarea className="input" rows={10} value={texto} onChange={e => setTexto(e.target.value)} /></Campo>
+      </div>
+      <div className="row" style={{ marginTop: 14 }}>
+        {dest.telefono ? <a className="btn btn-wa" href={linkWA(dest.telefono, texto)} target="_blank" rel="noopener" onClick={() => registrar("WhatsApp")}>Enviar por WhatsApp</a> : <span className="muted">Sin teléfono</span>}
+        {dest.email ? <a className="btn btn-mail" href={linkMail(dest.email, m.asunto, texto)} onClick={() => registrar("correo")}>Enviar por correo</a> : <span className="muted">Sin correo</span>}
+        <button className="btn btn-ghost" onClick={() => { navigator.clipboard?.writeText(texto); }}>Copiar texto</button>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ─── COMPARTIR CON INTERESADO ─────────────────────────────────────────────────
+function CompartirModal({ p, u, onClose }) {
+  const { uf, update, toast, user } = useApp();
+  const [i, setI] = useState({ nombre: "", telefono: "", email: "", nota: "" });
+  const texto = `Hola${i.nombre ? " " + i.nombre.split(" ")[0] : ""}, te comparto la información de la propiedad:\n\n${textoFichaDisponible(p, u, uf)}\n\nQuedo atento/a para coordinar una visita.`;
+  const registrar = canalTxt => {
+    if (!i.nombre && !i.telefono && !i.email) return;
+    update(s => { s.interesados.unshift({ id: uid(), ...i, propId: p.id, unidadId: u.id, fecha: toISO(new Date()), canal: canalTxt, por: user.nombre }); }, `Envió ficha de "${nombreUnidad(p, u)}" a interesado ${i.nombre || i.telefono || i.email} por ${canalTxt}`);
+  };
+  const compartirFotos = async () => {
+    try {
+      const files = await Promise.all((u.fotos || []).map(async (src, k) => { const b = await (await fetch(src)).blob(); return new File([b], `foto-${k + 1}.jpg`, { type: "image/jpeg" }); }));
+      if (navigator.canShare && navigator.canShare({ files })) {
+        await navigator.share({ files, title: nombreUnidad(p, u), text: texto });
+        registrar("compartir (fotos)");
+      } else toast("Este navegador no permite compartir fotos directamente. Usa “Ficha PDF” o compártelo desde el celular.");
+    } catch {}
+  };
+  const fichaPDF = () => {
+    imprimirHTML(`Ficha ${nombreUnidad(p, u)}`, `<h1 style="font-size:20px">${esc(nombreUnidad(p, u))}</h1><p style="text-align:center">${esc(p.direccion)}${p.comuna ? ", " + esc(p.comuna) : ""}</p>
+      <div class="fotos">${(u.fotos || []).slice(0, 6).map(f => `<img src="${f}"/>`).join("")}</div>
+      <table style="margin-top:14px"><tr><td>Tipo</td><td>${CATEGORIAS[u.categoria] || ""}</td></tr>${u.m2 ? `<tr><td>Superficie</td><td>${u.m2} m²</td></tr>` : ""}${u.dormitorios ? `<tr><td>Dormitorios</td><td>${u.dormitorios}</td></tr>` : ""}${u.banos ? `<tr><td>Baños</td><td>${u.banos}</td></tr>` : ""}${u.estacionamientos ? `<tr><td>Estacionamientos</td><td>${u.estacionamientos}</td></tr>` : ""}${u.precioUF ? `<tr><td>Valor mensual</td><td>${fmtUF(u.precioUF)} (aprox. ${fmtCLP(u.precioUF * uf)})</td></tr>` : ""}</table>
+      ${u.descripcion ? `<p style="margin-top:14px">${esc(u.descripcion)}</p>` : ""}<p>Ubicación: https://www.google.com/maps?q=${p.lat},${p.lng}</p>`);
+    registrar("ficha PDF");
+  };
+  return (
+    <Modal titulo={`Enviar a interesado · ${nombreUnidad(p, u)}`} onClose={onClose} ancho={640}>
+      <div className="form-grid">
+        <Campo label="Nombre del interesado"><input className="input" value={i.nombre} onChange={e => setI({ ...i, nombre: e.target.value })} /></Campo>
+        <Campo label="Teléfono / WhatsApp"><input className="input" value={i.telefono} onChange={e => setI({ ...i, telefono: e.target.value })} /></Campo>
+        <Campo label="Correo"><input className="input" value={i.email} onChange={e => setI({ ...i, email: e.target.value })} /></Campo>
+        <Campo label="Nota"><input className="input" value={i.nota} onChange={e => setI({ ...i, nota: e.target.value })} placeholder="Ej: busca para cafetería" /></Campo>
+      </div>
+      <div className="label" style={{ marginTop: 14 }}>Mensaje que se enviará</div>
+      <pre style={{ whiteSpace: "pre-wrap", fontFamily: "Sora", fontSize: 12.5, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 12 }}>{texto}</pre>
+      {(u.fotos || []).length > 0 && <div style={{ marginTop: 10 }}><Fotos fotos={u.fotos} editable={false} /></div>}
+      <div className="row" style={{ marginTop: 14 }}>
+        <a className={"btn btn-wa" + (i.telefono ? "" : " disabled")} href={i.telefono ? linkWA(i.telefono, texto) : undefined} target="_blank" rel="noopener" onClick={e => { if (!i.telefono) { e.preventDefault(); toast("Ingresa el teléfono del interesado"); } else registrar("WhatsApp"); }}>WhatsApp</a>
+        <a className="btn btn-mail" href={linkMail(i.email, `Propiedad en arriendo: ${nombreUnidad(p, u)}`, texto)} onClick={() => registrar("correo")}>Correo</a>
+        {(u.fotos || []).length > 0 && <button className="btn btn-ghost" onClick={compartirFotos}>📷 Compartir con fotos</button>}
+        <button className="btn btn-ghost" onClick={fichaPDF}>📄 Ficha PDF</button>
+      </div>
+      <div className="muted" style={{ marginTop: 10 }}>WhatsApp Web no permite adjuntar fotos desde un enlace: en el celular usa “Compartir con fotos”; en el computador envía la Ficha PDF.</div>
+    </Modal>
+  );
+}
+
+
+// ─── FICHA (panel lateral) ────────────────────────────────────────────────────
+function FichaDrawer({ propId, unidadId, onClose }) {
+  const { st, hoy, uf, user, update, toast, setUnidadFicha } = useApp();
+  const p = st.propiedades.find(x => x.id === propId);
+  const [tab, setTab] = useState("resumen");
+  const [modal, setModal] = useState(null);
+  useEffect(() => { setTab("resumen"); }, [unidadId]);
+  useEffect(() => { const f = e => e.key === "Escape" && !document.querySelector(".overlay") && onClose(); window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f); }, [onClose]);
+  if (!p) return null;
+  const esCentro = p.tipo === "centro";
+  const u = esCentro ? p.unidades.find(x => x.id === unidadId) : p.unidades[0];
+  const cp = calcPropiedad(p, hoy, uf);
+  const esDueno = user.rol === "dueno";
+
+  const eliminar = () => {
+    if (!confirm(`¿Eliminar "${p.nombre}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
+    update(s => { s.propiedades = s.propiedades.filter(x => x.id !== p.id); }, `Eliminó la propiedad "${p.nombre}"`);
+    onClose();
+  };
+
+  return (
+    <>
+      <div className="drawer-bg" onClick={onClose} />
+      <div className="drawer">
+        <div className="drawer-head">
+          <div className="row between" style={{ flexWrap: "nowrap" }}>
+            <div style={{ minWidth: 0 }}>
+              {esCentro && u && <button className="btn btn-ghost btn-sm" style={{ marginBottom: 6 }} onClick={() => setUnidadFicha(null)}>‹ {p.nombre}</button>}
+              <div style={{ fontWeight: 700, fontSize: 17 }}>{ICONO[esCentro && !u ? "centro" : u?.categoria]} {esCentro && u ? u.nombre : p.nombre}</div>
+              <div className="muted">{p.direccion}{p.comuna ? ", " + p.comuna : ""}</div>
+            </div>
+            <button className="icon-btn" onClick={onClose}>✕</button>
+          </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            {u ? <Badge estado={calcUnidad(u, hoy, uf).estado} /> : <Badge estado={cp.estado} />}
+            {puede(user, "editar") && <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "editar" })}>✏️ Editar</button>}
+            <a className="btn btn-ghost btn-sm" href={`https://www.google.com/maps?q=${p.lat},${p.lng}`} target="_blank" rel="noopener">🗺️ Google Maps</a>
+            {esDueno && !u && <button className="btn btn-danger btn-sm" onClick={eliminar}>Eliminar</button>}
+            {esDueno && u && !esCentro && <button className="btn btn-danger btn-sm" onClick={eliminar}>Eliminar</button>}
+          </div>
+        </div>
+        <div className="drawer-body">
+          {esCentro && !u ? <FichaCentro p={p} cp={cp} /> : <FichaUnidad p={p} u={u} tab={tab} setTab={setTab} setModal={setModal} />}
+        </div>
+      </div>
+      {modal && modal.t === "editar" && <PropiedadForm inicial={p} onClose={() => setModal(null)} />}
+      {modal && modal.t === "pago" && <PagoModal p={p} u={u} onClose={() => setModal(null)} />}
+      {modal && modal.t === "comunicar" && <ComunicarModal p={p} u={u} inicial={modal.plantilla} onClose={() => setModal(null)} />}
+      {modal && modal.t === "compartir" && <CompartirModal p={p} u={u} onClose={() => setModal(null)} />}
+      {modal && modal.t === "doc" && <DocumentoModal p={p} u={u} tipoInicial={modal.tipo} onClose={() => setModal(null)} />}
+    </>
+  );
+}
+
+function FichaCentro({ p, cp }) {
+  const { setUnidadFicha } = useApp();
+  return (
+    <div className="grid" style={{ gap: 16 }}>
+      <div className="grid g4" style={{ gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+        <Kpi label="Locales" valor={p.unidades.length} />
+        <Kpi label="Ocupados" valor={cp.ocupadas} />
+        <Kpi label="Libres" valor={cp.libres} color={EST.libre.color} />
+      </div>
+      <dl className="kv">
+        <dt>Renta mensual</dt><dd>{fmtCLP(cp.canonCLP)}</dd>
+        <dt>Deuda total</dt><dd style={{ color: cp.deudaCLP ? "#DC2626" : null }}>{fmtCLP(cp.deudaCLP)}</dd>
+        {p.rol && <><dt>Rol SII</dt><dd>{p.rol}</dd></>}
+        {p.notas && <><dt>Notas</dt><dd>{p.notas}</dd></>}
+      </dl>
+      <div>
+        <div className="h2">Locales</div>
+        <div className="grid" style={{ gap: 6 }}>
+          {cp.us.map(({ u, r }) => (
+            <div key={u.id} className="alert-row" onClick={() => setUnidadFicha(u.id)}>
+              <Badge estado={r.estado} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 13 }}>{u.nombre}{u.m2 ? ` · ${u.m2} m²` : ""}</div>
+                <div className="muted">{u.contrato ? `${u.contrato.arrendatario.nombre} · ${fmtMonto(u.contrato.valor, u.contrato.moneda)} · día ${u.contrato.diaPago}` : (u.precioUF ? `Disponible · ${fmtUF(u.precioUF)}` : "Disponible")}</div>
+              </div>
+              {r.deudaCLP > 0 && <span className="num" style={{ color: "#DC2626", fontWeight: 700, fontSize: 12 }}>{fmtCLP(r.deudaCLP)}</span>}
+              <span className="muted">›</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FichaUnidad({ p, u, tab, setTab, setModal }) {
+  const { st, hoy, uf, user, update, toast } = useApp();
+  if (!u) return <div className="empty">Unidad no encontrada.</div>;
+  const r = calcUnidad(u, hoy, uf);
+  const c = u.contrato;
+  const a = c?.arrendatario || {};
+  const esDueno = user.rol === "dueno";
+  const arr = p.arrendador && p.arrendador.nombre ? p.arrendador : { nombre: st.empresa.nombre, rut: st.empresa.rut, email: st.empresa.email, telefono: st.empresa.telefono };
+  const docs = st.documentos.filter(d => d.unidadId === u.id);
+  const interes = st.interesados.filter(x => x.unidadId === u.id);
+
+  const toggleMulta = () => update(s => {
+    const cc = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
+    cc.multa = { ...cc.multa, cobrar: !cc.multa.cobrar };
+  }, `${c.multa.cobrar ? "Desactivó" : "Activó"} el cobro de multa en "${nombreUnidad(p, u)}"`);
+
+  const terminar = () => {
+    if (!confirm(`¿Terminar el contrato de ${a.nombre}? La unidad quedará desocupada y el contrato pasará al historial.`)) return;
+    update(s => {
+      const uu = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id);
+      uu.historial = [...(uu.historial || []), { ...uu.contrato, terminado: toISO(new Date()) }];
+      uu.contrato = null;
+    }, `Terminó el contrato de ${a.nombre} en "${nombreUnidad(p, u)}"`);
+    toast("Contrato terminado. La unidad quedó disponible.");
+  };
+
+  const borrarPago = pg => {
+    if (!confirm(`¿Eliminar el pago de ${nombrePeriodo(pg.periodo)}?`)) return;
+    update(s => {
+      const cc = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
+      cc.pagos = cc.pagos.filter(x => x.id !== pg.id);
+    }, `Eliminó el pago de ${nombrePeriodo(pg.periodo)} en "${nombreUnidad(p, u)}"`);
+  };
+
+  const tabs = c ? [["resumen", "Resumen"], ["arrendatario", "Arrendatario"], ["pagos", `Pagos${r.deudas.length ? " ⚠️" : ""}`], ["fotos", "Fotos"], ["docs", `Documentos (${docs.length})`]]
+                 : [["resumen", "Resumen"], ["fotos", "Fotos"], ["interesados", `Interesados (${interes.length})`], ["docs", `Documentos (${docs.length})`]];
+
+  return (
+    <div>
+      {u.fotos?.length ? <img className="cover" style={{ borderRadius: 10, height: 180 }} src={u.fotos[0]} alt="" /> : null}
+      {c ? (
+        <div className="row" style={{ marginTop: 12 }}>
+          {puede(user, "pagos") && <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "pago" })}>💵 Registrar pago</button>}
+          <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "comunicar" })}>💬 Contactar</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "doc", tipo: p.tipo === "centro" || ["local", "oficina", "bodega"].includes(u.categoria) ? "contrato_com" : "contrato_hab" })}>📄 Contrato / anexo</button>
+        </div>
+      ) : (
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "compartir" })}>📤 Enviar a interesado</button>
+          {puede(user, "editar") && <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "editar" })}>🔑 Arrendar (crear contrato)</button>}
+        </div>
+      )}
+
+      <div className="tabs">{tabs.map(([k, l]) => <button key={k} className={"tab" + (tab === k ? " active" : "")} onClick={() => setTab(k)}>{l}</button>)}</div>
+      <div style={{ paddingTop: 16 }}>
+        {tab === "resumen" && (
+          <div className="grid" style={{ gap: 18 }}>
+            {c && (
+              <div className="card" style={{ background: EST[r.estado].bg, borderColor: EST[r.estado].color + "55", padding: 14 }}>
+                <div className="row between">
+                  <div>
+                    <div className="muted">Renta mensual</div>
+                    <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtMonto(c.valor, c.moneda)}</div>
+                    {c.moneda === "UF" && <div className="muted">≈ {fmtCLP(r.canonCLP)} (UF {fmtCLP(uf)})</div>}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <Badge estado={r.estado} />
+                    <div className="muted" style={{ marginTop: 6 }}>{r.proxVenc ? `Próximo pago: ${fmtFecha(r.proxVenc)}` : ""}</div>
+                  </div>
+                </div>
+                {r.deudas.length > 0 && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${EST.atrasado.color}33` }}>
+                    <div style={{ fontWeight: 700, color: "#B91C1C" }}>Deuda: {fmtCLP(r.deudaCLP)}</div>
+                    {r.deudas.map(d => <div key={d.periodo} className="muted">{nombrePeriodo(d.periodo)} · {d.dias} días de atraso{d.multa ? ` · multa ${fmtMonto(d.multa, c.moneda)}` : ""}</div>)}
+                  </div>
+                )}
+              </div>
+            )}
+            <div>
+              <div className="h2">Datos de la propiedad</div>
+              <dl className="kv">
+                <dt>Tipo</dt><dd>{CATEGORIAS[u.categoria]}{p.tipo === "centro" ? ` en ${p.nombre}` : ""}</dd>
+                <dt>Dirección</dt><dd>{p.direccion}, {p.comuna}</dd>
+                {u.m2 ? <><dt>Superficie</dt><dd>{u.m2} m²</dd></> : null}
+                {u.dormitorios ? <><dt>Dormitorios</dt><dd>{u.dormitorios}</dd></> : null}
+                {u.banos ? <><dt>Baños</dt><dd>{u.banos}</dd></> : null}
+                {u.estacionamientos ? <><dt>Estacionamientos</dt><dd>{u.estacionamientos}</dd></> : null}
+                {p.rol && <><dt>Rol SII</dt><dd>{p.rol}</dd></>}
+                <dt>Coordenadas</dt><dd className="mono" style={{ fontSize: 12 }}>{Number(p.lat).toFixed(5)}, {Number(p.lng).toFixed(5)}</dd>
+                {!c && u.precioUF ? <><dt>Precio publicado</dt><dd>{fmtUF(u.precioUF)} ≈ {fmtCLP(u.precioUF * uf)}</dd></> : null}
+                {u.descripcion && <><dt>Descripción</dt><dd>{u.descripcion}</dd></>}
+              </dl>
+            </div>
+            {c && (
+              <div>
+                <div className="h2">Datos del arriendo</div>
+                <dl className="kv">
+                  <dt>Arrendatario</dt><dd>{a.nombre}</dd>
+                  <dt>Vigencia</dt><dd>{fmtFecha(c.inicio)} al {fmtFecha(c.termino)} {r.diasTermino != null && r.diasTermino <= DIAS_AVISO_TERMINO && <span className="tag" style={{ background: C.warningBg, color: C.warning }}>{r.diasTermino < 0 ? "vencido" : `termina en ${r.diasTermino} días`}</span>}</dd>
+                  <dt>Día de pago</dt><dd>{c.diaPago} de cada mes</dd>
+                  <dt>Garantía</dt><dd>{c.garantia ? fmtMonto(c.garantia, c.moneda) : "—"}</dd>
+                  <dt>Multa</dt><dd>{descripcionMulta(c)}</dd>
+                </dl>
+                <div className="card" style={{ marginTop: 10, padding: 12, background: c.multa?.cobrar ? C.warningBg : C.bg }}>
+                  <div className="row between">
+                    <span style={{ fontSize: 12.5 }}><b>Cobro de multa:</b> {c.multa?.cobrar ? "activo — se aplica automáticamente al vencer" : "desactivado"}</span>
+                    {esDueno ? <button className="btn btn-ghost btn-sm" onClick={toggleMulta}>{c.multa?.cobrar ? "Desactivar" : "Activar"}</button> : <span className="muted">Lo decide el dueño</span>}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div>
+              <div className="h2">Arrendador</div>
+              <dl className="kv"><dt>Nombre</dt><dd>{arr.nombre}</dd>{arr.rut && <><dt>RUT</dt><dd>{arr.rut}</dd></>}</dl>
+              <div style={{ marginTop: 8 }}><Contactar tel={arr.telefono} email={arr.email} compacto mensaje={`Hola ${arr.nombre || ""}, te escribo por la propiedad ${nombreUnidad(p, u)} (${p.direccion}).`} asunto={`Propiedad ${nombreUnidad(p, u)}`} /></div>
+            </div>
+            {c && esDueno && <button className="btn btn-danger btn-sm" style={{ justifySelf: "start" }} onClick={terminar}>Terminar contrato y dejar disponible</button>}
+            {(u.historial || []).length > 0 && (
+              <div><div className="h2">Contratos anteriores</div>
+                {u.historial.map((h, i) => <div key={i} className="muted">{h.arrendatario?.nombre} · {fmtFecha(h.inicio)} al {fmtFecha(h.terminado || h.termino)} · {fmtMonto(h.valor, h.moneda)}</div>)}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "arrendatario" && c && (
+          <div className="grid" style={{ gap: 14 }}>
+            <dl className="kv">
+              <dt>Nombre</dt><dd>{a.nombre}</dd>
+              <dt>RUT</dt><dd>{a.rut || "—"}</dd>
+              <dt>Correo</dt><dd>{a.email || "—"}</dd>
+              <dt>Teléfono</dt><dd>{a.telefono || "—"}</dd>
+              <dt>Domicilio</dt><dd>{a.domicilio || "—"}</dd>
+              {a.giro && <><dt>Giro</dt><dd>{a.giro}</dd></>}
+              {a.representante && <><dt>Representante / aval</dt><dd>{a.representante}</dd></>}
+            </dl>
+            <div className="label">Contacto directo</div>
+            <Contactar tel={a.telefono} email={a.email} mensaje={`Estimado/a ${a.nombre}, `} asunto={`Arriendo ${nombreUnidad(p, u)}`} />
+            <button className="btn btn-ghost" style={{ justifySelf: "start" }} onClick={() => setModal({ t: "comunicar" })}>Usar plantilla (recordatorio, atraso, etc.)</button>
+          </div>
+        )}
+
+        {tab === "pagos" && c && (
+          <div className="grid" style={{ gap: 14 }}>
+            {r.deudas.length > 0 && (
+              <div className="card" style={{ background: EST.atrasado.bg, borderColor: "#FCA5A5", padding: 14 }}>
+                <div className="row between">
+                  <b style={{ color: "#B91C1C" }}>Pendiente: {fmtCLP(r.deudaCLP)}</b>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "comunicar", plantilla: "atraso" })}>Enviar aviso de atraso</button>
+                </div>
+                {r.deudas.map(d => <div key={d.periodo} className="muted" style={{ marginTop: 4 }}>{nombrePeriodo(d.periodo)}: {fmtMonto(c.valor, c.moneda)} · venció {fmtFecha(d.venc)} ({d.dias} días){d.multa ? ` · multa ${fmtMonto(d.multa, c.moneda)}` : ""}</div>)}
+              </div>
+            )}
+            {!(c.pagos || []).length ? <div className="empty">Sin pagos registrados.</div> : (
+              <div className="table-wrap"><table>
+                <thead><tr><th>Mes</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th>{esDueno && <th></th>}</tr></thead>
+                <tbody>{[...c.pagos].sort((x, y) => y.periodo.localeCompare(x.periodo)).map(pg => (
+                  <tr key={pg.id} title={`Registró: ${pg.registradoPor}${pg.obs ? " · " + pg.obs : ""}`}>
+                    <td style={{ textTransform: "capitalize" }}>{nombrePeriodo(pg.periodo)}</td><td>{fmtFecha(pg.fecha)}</td>
+                    <td className="num">{fmtCLP(pg.montoCLP)}</td><td className="num">{pg.multaCLP ? fmtCLP(pg.multaCLP) : "—"}</td><td>{pg.metodo}</td>
+                    {esDueno && <td><button className="icon-btn" style={{ fontSize: 13 }} onClick={() => borrarPago(pg)}>🗑</button></td>}
+                  </tr>))}
+                </tbody></table></div>
+            )}
+          </div>
+        )}
+
+        {tab === "fotos" && (
+          <Fotos fotos={u.fotos} editable={puede(user, "editar")} onChange={f => update(s => { s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).fotos = f; }, `Actualizó fotos de "${nombreUnidad(p, u)}"`)} />
+        )}
+
+        {tab === "interesados" && (
+          interes.length ? <div className="grid" style={{ gap: 6 }}>{interes.map(x => (
+            <div key={x.id} className="alert-row" style={{ cursor: "default" }}>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{x.nombre || "Sin nombre"}</div><div className="muted">{fmtFecha(x.fecha)} · {x.canal} · {x.telefono} {x.email}{x.nota ? " · " + x.nota : ""}</div></div>
+              <Contactar tel={x.telefono} email={x.email} compacto mensaje={`Hola ${x.nombre || ""}, te escribo por la propiedad ${nombreUnidad(p, u)}.`} asunto={`Propiedad ${nombreUnidad(p, u)}`} />
+            </div>))}</div> : <div className="empty">Aún no se ha enviado esta propiedad a interesados.</div>
+        )}
+
+        {tab === "docs" && (
+          <div className="grid" style={{ gap: 10 }}>
+            <button className="btn btn-primary btn-sm" style={{ justifySelf: "start" }} onClick={() => setModal({ t: "doc" })}>+ Generar documento</button>
+            {docs.length ? docs.map(d => (
+              <div key={d.id} className="alert-row" onClick={() => setModal({ t: "doc", doc: d })}>
+                <span>📄</span><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{d.titulo}</div><div className="muted">{fmtFecha(d.fecha)} · {d.autor}</div></div>
+                <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); imprimirHTML(d.titulo, d.html); }}>PDF</button>
+                <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); descargarWord(d.titulo, d.html); }}>Word</button>
+              </div>)) : <div className="empty">Sin documentos generados.</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ─── DOCUMENTOS ───────────────────────────────────────────────────────────────
+function DocumentoModal({ p, u, tipoInicial, onClose }) {
+  const { st, hoy, uf, update, user, toast } = useApp();
+  const [tipo, setTipo] = useState(tipoInicial || (u.contrato ? "anexo_renta" : "contrato_hab"));
+  const [extra, setExtra] = useState({ nuevoValor: "", desde: toISO(hoy), nuevoTermino: "", texto: "", fechaTermino: toISO(hoy) });
+  const [version, setVersion] = useState(0);
+  const ref = useRef(null);
+  const html = useMemo(() => generarDocumento(tipo, { st, p, u, extra, hoy, uf }), [tipo, extra, version]);
+  useEffect(() => { if (ref.current) ref.current.innerHTML = html; }, [html]);
+  const titulo = `${TIPOS_DOC[tipo]} - ${nombreUnidad(p, u)}`;
+  const actual = () => ref.current ? ref.current.innerHTML : html;
+  const guardar = () => {
+    update(s => { s.documentos.unshift({ id: uid(), propId: p.id, unidadId: u.id, tipo, titulo, fecha: toISO(new Date()), autor: user.nombre, html: actual() }); }, `Generó "${titulo}"`);
+    toast("Documento guardado en la ficha");
+  };
+  const necesitaContrato = !u.contrato && tipo !== "contrato_hab" && tipo !== "contrato_com";
+  return (
+    <Modal titulo="Generar contrato o anexo" onClose={onClose} ancho={920}
+      pie={<>
+        <button className="btn btn-ghost" onClick={() => imprimirHTML(titulo, actual())}>🖨️ Imprimir / PDF</button>
+        <button className="btn btn-ghost" onClick={() => descargarWord(titulo, actual())}>⬇️ Word</button>
+        <button className="btn btn-primary" onClick={guardar}>Guardar en la ficha</button>
+      </>}>
+      <div className="form-grid">
+        <Campo label="Documento">
+          <select className="select" value={tipo} onChange={e => setTipo(e.target.value)}>
+            {Object.entries(TIPOS_DOC).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </Campo>
+        {(tipo === "anexo_renta" || tipo === "anexo_prorroga") && <Campo label={`Nueva renta (${u.contrato?.moneda || "UF"})`}><input className="input" value={extra.nuevoValor} onChange={e => setExtra({ ...extra, nuevoValor: e.target.value })} /></Campo>}
+        {tipo === "anexo_renta" && <Campo label="Vigente desde"><input className="input" type="date" value={extra.desde} onChange={e => setExtra({ ...extra, desde: e.target.value })} /></Campo>}
+        {tipo === "anexo_prorroga" && <Campo label="Nuevo término"><input className="input" type="date" value={extra.nuevoTermino} onChange={e => setExtra({ ...extra, nuevoTermino: e.target.value })} /></Campo>}
+        {tipo === "termino" && <Campo label="Fecha de término"><input className="input" type="date" value={extra.fechaTermino} onChange={e => setExtra({ ...extra, fechaTermino: e.target.value })} /></Campo>}
+        {(tipo === "anexo_libre" || tipo === "entrega") && <Campo label={tipo === "entrega" ? "Estado del inmueble" : "Modificación acordada"} span><textarea className="input" rows={2} value={extra.texto} onChange={e => setExtra({ ...extra, texto: e.target.value })} /></Campo>}
+      </div>
+      {necesitaContrato && <div className="card" style={{ marginTop: 12, background: C.warningBg, padding: 12, fontSize: 12.5 }}>Esta unidad no tiene contrato registrado: los datos del arrendatario saldrán en blanco.</div>}
+      <div className="row between" style={{ margin: "14px 0 8px" }}>
+        <span className="muted">Puedes editar el texto directamente antes de imprimir o guardar.</span>
+        <button className="btn btn-ghost btn-sm" onClick={() => setVersion(v => v + 1)}>Restablecer texto</button>
+      </div>
+      <div ref={ref} className="doc-editor" contentEditable suppressContentEditableWarning />
+      <div className="muted" style={{ marginTop: 8 }}>⚖️ Borrador de referencia: revísalo con un abogado antes de firmar.</div>
+    </Modal>
+  );
+}
+
+function ContratosView() {
+  const { st, hoy, uf, abrirFicha } = useApp();
+  const [sel, setSel] = useState(null);
+  const unidades = listarUnidades(st);
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div className="h1">Contratos y anexos</div>
+      <div className="grid g2">
+        <div className="card">
+          <div className="h2">Generar documento</div>
+          <div className="muted" style={{ marginBottom: 10 }}>Elige la propiedad o local. Los datos del arrendatario, renta, plazos y multa se completan desde la ficha.</div>
+          <div className="grid" style={{ gap: 6, maxHeight: 420, overflowY: "auto" }}>
+            {unidades.map(({ p, u }) => (
+              <div key={u.id} className="alert-row" onClick={() => setSel({ p, u })}>
+                <Badge estado={calcUnidad(u, hoy, uf).estado} />
+                <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(p, u)}</div><div className="muted">{u.contrato ? u.contrato.arrendatario.nombre : "Sin contrato"}</div></div>
+                <span className="muted">›</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="card">
+          <div className="h2">Documentos generados</div>
+          {!st.documentos.length ? <div className="empty">Aún no hay documentos.</div> : (
+            <div className="grid" style={{ gap: 6, maxHeight: 420, overflowY: "auto" }}>
+              {st.documentos.map(d => (
+                <div key={d.id} className="alert-row" onClick={() => abrirFicha(d.propId, d.unidadId)}>
+                  <span>📄</span>
+                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 13 }}>{d.titulo}</div><div className="muted">{fmtFecha(d.fecha)} · {d.autor}</div></div>
+                  <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); imprimirHTML(d.titulo, d.html); }}>PDF</button>
+                  <button className="btn btn-ghost btn-sm" onClick={e => { e.stopPropagation(); descargarWord(d.titulo, d.html); }}>Word</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {sel && <DocumentoModal p={sel.p} u={sel.u} onClose={() => setSel(null)} />}
+    </div>
+  );
+}
+
+
+// ─── COBRANZA ─────────────────────────────────────────────────────────────────
+function CobranzaView() {
+  const { st, hoy, uf, abrirFicha, user } = useApp();
+  const [filtro, setFiltro] = useState("");
+  const [modal, setModal] = useState(null);
+  const filas = listarUnidades(st).filter(x => x.u.contrato).map(x => ({ ...x, r: calcUnidad(x.u, hoy, uf) }))
+    .filter(x => !filtro || x.r.estado === filtro)
+    .sort((a, b) => EST[a.r.estado].ord - EST[b.r.estado].ord || (a.u.contrato.diaPago - b.u.contrato.diaPago));
+  const cuenta = {};
+  listarUnidades(st).filter(x => x.u.contrato).forEach(x => { const e = calcUnidad(x.u, hoy, uf).estado; cuenta[e] = (cuenta[e] || 0) + 1; });
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div className="row between">
+        <div><div className="h1">Cobranza · {MESES[hoy.getMonth()]} {hoy.getFullYear()}</div><div className="muted">UF hoy {fmtCLP(uf)} · las multas se calculan automáticamente solo donde el dueño las activó</div></div>
+      </div>
+      <div className="row">
+        <button className={"btn btn-sm " + (!filtro ? "btn-primary" : "btn-ghost")} onClick={() => setFiltro("")}>Todos ({Object.values(cuenta).reduce((a, b) => a + b, 0)})</button>
+        {["atrasado", "hoy", "proximo", "pendiente", "pagado"].map(k => (
+          <button key={k} className={"btn btn-sm " + (filtro === k ? "btn-primary" : "btn-ghost")} onClick={() => setFiltro(k)}><span className="dot" style={{ background: EST[k].color }} />{EST[k].label} ({cuenta[k] || 0})</button>
+        ))}
+      </div>
+      {!filas.length ? <div className="card empty">Nada que mostrar.</div> : (
+        <div className="table-wrap"><table>
+          <thead><tr><th>Unidad</th><th>Arrendatario</th><th>Vence</th><th>Estado</th><th className="num">Renta</th><th className="num">Multa</th><th className="num">Deuda</th><th></th></tr></thead>
+          <tbody>{filas.map(({ p, u, r }) => {
+            const c = u.contrato;
+            return (
+              <tr key={u.id} className="click" onClick={() => abrirFicha(p.id, u.id)}>
+                <td style={{ fontWeight: 600 }}>{nombreUnidad(p, u)}</td>
+                <td>{c.arrendatario.nombre}</td>
+                <td>{r.deudas.length ? fmtFecha(r.deudas[0].venc) : r.proxVenc ? fmtFecha(r.proxVenc) : "—"}</td>
+                <td><Badge estado={r.estado}>{r.estado === "atrasado" ? `Atrasado ${r.deudas[0].dias}d` : null}</Badge></td>
+                <td className="num">{fmtMonto(c.valor, c.moneda)}</td>
+                <td className="num">{c.multa?.cobrar ? (r.multa ? fmtMonto(r.multa, c.moneda) : "$0") : <span className="muted">no cobra</span>}</td>
+                <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}</td>
+                <td onClick={e => e.stopPropagation()}>
+                  <div className="row" style={{ flexWrap: "nowrap" }}>
+                    {puede(user, "pagos") && r.estado !== "pagado" && <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "pago", p, u })}>Pagó</button>}
+                    <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "com", p, u })}>Avisar</button>
+                  </div>
+                </td>
+              </tr>);
+          })}</tbody></table></div>
+      )}
+      {modal && modal.t === "pago" && <PagoModal p={modal.p} u={modal.u} onClose={() => setModal(null)} />}
+      {modal && modal.t === "com" && <ComunicarModal p={modal.p} u={modal.u} onClose={() => setModal(null)} />}
+    </div>
+  );
+}
+
+
+// ─── DISPONIBLES ──────────────────────────────────────────────────────────────
+function DisponiblesView() {
+  const { st, uf, abrirFicha } = useApp();
+  const [compartir, setCompartir] = useState(null);
+  const libres = listarUnidades(st).filter(x => !x.u.contrato);
+  const filtroFn = useCallback(pt => pt.cp.libres > 0, []);
+  const puntos = usePuntos(st.propiedades, filtroFn, true);
+  return (
+    <div className="grid fade-up" style={{ gap: 16 }}>
+      <div><div className="h1">Propiedades desocupadas</div><div className="muted">{libres.length} unidades disponibles. Envía la ficha con fotos a cualquier interesado por WhatsApp o correo.</div></div>
+      {libres.length > 0 && <MapaBase puntos={puntos} alto={300} onSelect={id => abrirFicha(id)} />}
+      {!libres.length ? <div className="card empty">🎉 Todas las unidades están arrendadas.</div> : (
+        <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))" }}>
+          {libres.map(({ p, u }) => (
+            <div key={u.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
+              {u.fotos?.length ? <img className="cover" src={u.fotos[0]} alt="" /> : <div className="cover-empty">{ICONO[u.categoria] || "📍"}</div>}
+              <div style={{ padding: 14 }}>
+                <div style={{ fontWeight: 700 }}>{nombreUnidad(p, u)}</div>
+                <div className="muted">{p.direccion}, {p.comuna}</div>
+                <div className="row" style={{ marginTop: 8, fontSize: 12, color: C.textDim }}>
+                  <span>{CATEGORIAS[u.categoria]}</span>{u.m2 ? <span>· {u.m2} m²</span> : null}{u.dormitorios ? <span>· {u.dormitorios} dorm.</span> : null}{u.banos ? <span>· {u.banos} baños</span> : null}
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 16, marginTop: 8, color: EST.libre.color }}>{u.precioUF ? `${fmtUF(u.precioUF)}` : "Precio por definir"}{u.precioUF ? <span className="muted" style={{ fontWeight: 400 }}> ≈ {fmtCLP(u.precioUF * uf)}</span> : null}</div>
+                <div className="row" style={{ marginTop: 12 }}>
+                  <button className="btn btn-primary btn-sm" onClick={() => setCompartir({ p, u })}>📤 Enviar a interesado</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => abrirFicha(p.id, u.id)}>Ver ficha</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {st.interesados.length > 0 && (
+        <div className="card">
+          <div className="h2">Últimos interesados</div>
+          <div className="table-wrap"><table>
+            <thead><tr><th>Fecha</th><th>Interesado</th><th>Contacto</th><th>Propiedad</th><th>Vía</th></tr></thead>
+            <tbody>{st.interesados.slice(0, 15).map(x => {
+              const p = st.propiedades.find(y => y.id === x.propId); const u = p?.unidades.find(y => y.id === x.unidadId);
+              return <tr key={x.id}><td>{fmtFecha(x.fecha)}</td><td>{x.nombre || "—"}{x.nota ? <div className="muted">{x.nota}</div> : null}</td><td>{x.telefono} {x.email}</td><td>{p && u ? nombreUnidad(p, u) : "—"}</td><td>{x.canal}</td></tr>;
+            })}</tbody></table></div>
+        </div>
+      )}
+      {compartir && <CompartirModal p={compartir.p} u={compartir.u} onClose={() => setCompartir(null)} />}
+    </div>
+  );
+}
+
+
+// ─── BITÁCORA Y CONFIGURACIÓN ─────────────────────────────────────────────────
+function BitacoraView() {
+  const { st } = useApp();
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div><div className="h1">Bitácora</div><div className="muted">Registro de lo que hizo cada usuario (dueño y secretaria).</div></div>
+      {!st.bitacora.length ? <div className="card empty">Sin movimientos.</div> : (
+        <div className="table-wrap"><table>
+          <thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Acción</th></tr></thead>
+          <tbody>{st.bitacora.map((b, i) => <tr key={i}><td className="mono" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>{new Date(b.t).toLocaleString("es-CL")}</td><td>{b.u}</td><td>{b.a}</td></tr>)}</tbody>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
+function ConfigView() {
+  const { st, update, user, toast, recargarUF } = useApp();
+  const [emp, setEmp] = useState(st.empresa);
+  const [nu, setNu] = useState({ nombre: "", usuario: "", clave: "", rol: "secretaria" });
+  const [clave, setClave] = useState({ id: "", nueva: "" });
+  const archivo = useRef(null);
+
+  const agregarUsuario = async () => {
+    if (!nu.nombre || !nu.usuario || nu.clave.length < 6) return toast("Completa nombre, usuario y clave (mín. 6 caracteres)");
+    const usuario = nu.usuario.trim().toLowerCase();
+    if (st.usuarios.some(x => x.usuario === usuario)) return toast("Ese usuario ya existe");
+    const hash = await sha256(nu.clave);
+    update(s => { s.usuarios.push({ id: uid(), nombre: nu.nombre, usuario, rol: nu.rol, hash, activo: true }); }, `Creó el usuario ${usuario} (${nu.rol})`);
+    setNu({ nombre: "", usuario: "", clave: "", rol: "secretaria" });
+    toast("Usuario creado");
+  };
+  const cambiarClave = async () => {
+    if (clave.nueva.length < 6) return toast("La clave debe tener al menos 6 caracteres");
+    const hash = await sha256(clave.nueva);
+    const u = st.usuarios.find(x => x.id === clave.id);
+    update(s => { s.usuarios.find(x => x.id === clave.id).hash = hash; }, `Cambió la clave de ${u.usuario}`);
+    setClave({ id: "", nueva: "" }); toast("Clave actualizada");
+  };
+  const exportar = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(st)], { type: "application/json" }));
+    a.download = `respaldo-arriendos-${toISO(new Date())}.json`; a.click();
+  };
+  const importar = e => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const d = JSON.parse(r.result);
+        if (!d.propiedades || !d.usuarios) throw new Error();
+        if (!confirm("Esto reemplazará todos los datos actuales por los del respaldo. ¿Continuar?")) return;
+        update(s => { Object.keys(s).forEach(k => delete s[k]); Object.assign(s, d); }, "Restauró un respaldo");
+        toast("Respaldo restaurado");
+      } catch { toast("Archivo de respaldo inválido"); }
+    };
+    r.readAsText(f); e.target.value = "";
+  };
+
+  return (
+    <div className="grid fade-up" style={{ gap: 16 }}>
+      <div className="h1">Configuración</div>
+      <div className="card">
+        <div className="h2">Datos de la empresa (arrendador por defecto)</div>
+        <div className="form-grid">
+          {[["nombre", "Razón social"], ["rut", "RUT"], ["direccion", "Domicilio"], ["email", "Correo"], ["telefono", "Teléfono / WhatsApp"], ["representante", "Representante legal"], ["rutRep", "RUT representante"]].map(([k, l]) =>
+            <Campo key={k} label={l}><input className="input" value={emp[k] || ""} onChange={e => setEmp({ ...emp, [k]: e.target.value })} /></Campo>)}
+        </div>
+        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => { update(s => { s.empresa = emp; }, "Actualizó los datos de la empresa"); toast("Guardado"); }}>Guardar</button>
+      </div>
+
+      <div className="card">
+        <div className="h2">Valor UF</div>
+        <div className="row">
+          <div style={{ width: 160 }}><input className="input" type="number" step="0.01" value={st.uf.valor} onChange={e => update(s => { s.uf = { valor: Number(e.target.value) || 0, fecha: toISO(new Date()), auto: false }; })} /></div>
+          <span className="muted">Actualizada: {fmtFecha(st.uf.fecha)} {st.uf.auto ? "(automática, mindicador.cl)" : "(manual)"}</span>
+          <button className="btn btn-ghost btn-sm" onClick={recargarUF}>Actualizar desde internet</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="h2">Usuarios</div>
+        <div className="muted" style={{ marginBottom: 10 }}>La <b>secretaria</b> puede agregar y editar propiedades, registrar pagos, enviar avisos y generar contratos. Solo el <b>dueño</b> ve los ingresos, decide las multas (activar/condonar), elimina datos y administra usuarios. Todo queda en la bitácora.</div>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+          <tbody>{st.usuarios.map(u => (
+            <tr key={u.id}><td>{u.nombre}</td><td className="mono">{u.usuario}</td><td>{u.rol === "dueno" ? "Dueño" : "Secretaria"}</td>
+              <td>{u.activo === false ? <span className="tag" style={{ background: C.dangerBg, color: C.danger }}>Desactivado</span> : <span className="tag" style={{ background: C.successBg, color: C.success }}>Activo</span>}</td>
+              <td><div className="row" style={{ flexWrap: "nowrap" }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setClave({ id: u.id, nueva: "" })}>Cambiar clave</button>
+                {u.id !== user.id && <button className="btn btn-ghost btn-sm" onClick={() => update(s => { const x = s.usuarios.find(y => y.id === u.id); x.activo = x.activo === false; }, `${u.activo === false ? "Activó" : "Desactivó"} al usuario ${u.usuario}`)}>{u.activo === false ? "Activar" : "Desactivar"}</button>}
+              </div></td></tr>))}
+          </tbody></table></div>
+        {clave.id && (
+          <div className="row" style={{ marginTop: 10 }}>
+            <span>Nueva clave para <b>{st.usuarios.find(x => x.id === clave.id)?.usuario}</b>:</span>
+            <div style={{ width: 200 }}><input className="input" type="password" value={clave.nueva} onChange={e => setClave({ ...clave, nueva: e.target.value })} /></div>
+            <button className="btn btn-primary btn-sm" onClick={cambiarClave}>Guardar</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setClave({ id: "", nueva: "" })}>Cancelar</button>
+          </div>
+        )}
+        <div className="label" style={{ marginTop: 16 }}>Agregar usuario</div>
+        <div className="form-grid">
+          <Campo label="Nombre"><input className="input" value={nu.nombre} onChange={e => setNu({ ...nu, nombre: e.target.value })} /></Campo>
+          <Campo label="Usuario"><input className="input" value={nu.usuario} onChange={e => setNu({ ...nu, usuario: e.target.value })} /></Campo>
+          <Campo label="Clave"><input className="input" type="password" value={nu.clave} onChange={e => setNu({ ...nu, clave: e.target.value })} autoComplete="new-password" /></Campo>
+          <Campo label="Rol"><select className="select" value={nu.rol} onChange={e => setNu({ ...nu, rol: e.target.value })}><option value="secretaria">Secretaria</option><option value="dueno">Dueño</option></select></Campo>
+        </div>
+        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={agregarUsuario}>Crear usuario</button>
+      </div>
+
+      <div className="card">
+        <div className="h2">Respaldo de datos</div>
+        <div className="muted" style={{ marginBottom: 10 }}>Por ahora los datos se guardan en este navegador. Descarga un respaldo con frecuencia.</div>
+        <div className="row">
+          <button className="btn btn-ghost" onClick={exportar}>⬇️ Descargar respaldo</button>
+          <button className="btn btn-ghost" onClick={() => archivo.current.click()}>⬆️ Restaurar respaldo</button>
+          <input ref={archivo} type="file" accept="application/json" hidden onChange={importar} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ─── APLICACIÓN ───────────────────────────────────────────────────────────────
+const VISTAS = [
+  { id: "panel", label: "Panel", icono: "📊", grupo: "General" },
+  { id: "mapa", label: "Mapa", icono: "🗺️", grupo: "General" },
+  { id: "propiedades", label: "Propiedades", icono: "🏢", grupo: "Gestión" },
+  { id: "cobranza", label: "Cobranza", icono: "💵", grupo: "Gestión" },
+  { id: "disponibles", label: "Desocupadas", icono: "🏷️", grupo: "Gestión" },
+  { id: "contratos", label: "Contratos y anexos", icono: "📄", grupo: "Gestión" },
+  { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloDueno: true },
+  { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloDueno: true },
+];
+
+function App() {
+  const [st, setSt] = useState(null);
+  const [cargado, setCargado] = useState(false);
+  const [userId, setUserId] = useState(sesion.get());
+  const [vista, setVista] = useState("panel");
+  const [ficha, setFicha] = useState(null);
+  const [toastMsg, setToastMsg] = useState("");
+  const [hoy, setHoy] = useState(() => sinHora(new Date()));
+  const [menu, setMenu] = useState(false);
+  const stRef = useRef(null); stRef.current = st;
+
+  useEffect(() => {
+    Store.load().then(s => { setSt(s); setCargado(true); });
+    if (canal) canal.onmessage = () => Store.load().then(setSt);
+    const t = setInterval(() => { const d = sinHora(new Date()); setHoy(h => h.getTime() === d.getTime() ? h : d); }, 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  const toast = useCallback(m => { setToastMsg(m); clearTimeout(window.__tt); window.__tt = setTimeout(() => setToastMsg(""), 3200); }, []);
+  const user = st && st.usuarios.find(u => u.id === userId && u.activo !== false);
+
+  const guardar = useCallback(n => { setSt(n); Store.save(n).then(() => canal && canal.postMessage("u")); }, []);
+  const update = useCallback((fn, accion) => {
+    const n = structuredClone(stRef.current);
+    fn(n);
+    if (accion) { n.bitacora = [{ t: Date.now(), u: (n.usuarios.find(x => x.id === userId) || {}).nombre || "—", a: accion }, ...(n.bitacora || [])].slice(0, 1000); }
+    stRef.current = n;
+    guardar(n);
+  }, [guardar, userId]);
+
+  const recargarUF = useCallback(async () => {
+    try { const r = await obtenerUF(); update(s => { s.uf = { valor: r.valor, fecha: r.fecha, auto: true }; }); toast(`UF actualizada: ${fmtCLP(r.valor)}`); }
+    catch { toast("No se pudo obtener la UF. Ingresa el valor manualmente en Configuración."); }
+  }, [update, toast]);
+
+  // UF automática una vez al día
+  useEffect(() => {
+    if (st && user && st.uf.auto !== false && st.uf.fecha !== toISO(hoy)) obtenerUF().then(r => update(s => { s.uf = { valor: r.valor, fecha: toISO(hoy), auto: true }; })).catch(() => {});
+  }, [!!user, hoy]);
+
+  if (!cargado) return null;
+  if (!user) {
+    return <><style>{css}</style><Acceso st={st}
+      onEntrar={u => { sesion.set(u.id); setUserId(u.id); }}
+      onCrear={(u, ejemplo) => {
+        const n = st && st.usuarios ? structuredClone(st) : estadoInicial(ejemplo, sinHora(new Date()));
+        n.usuarios.push(u);
+        n.bitacora.unshift({ t: Date.now(), u: u.nombre, a: "Creó la cuenta del dueño" });
+        guardar(n); sesion.set(u.id); setUserId(u.id);
+      }} /></>;
+  }
+
+  const ctx = {
+    st, update, user, hoy, uf: Number(st.uf.valor) || 0, toast, recargarUF,
+    abrirFicha: (propId, unidadId = null) => setFicha({ propId, unidadId }),
+    setUnidadFicha: unidadId => setFicha(f => ({ ...f, unidadId })),
+    ir: v => setVista(v),
+  };
+  const atrasados = listarUnidades(st).filter(x => x.u.contrato && calcUnidad(x.u, hoy, ctx.uf).estado === "atrasado").length;
+  const vistas = VISTAS.filter(v => !v.soloDueno || user.rol === "dueno");
+  const grupos = [...new Set(vistas.map(v => v.grupo))];
+  const vistaOk = vistas.some(v => v.id === vista) ? vista : "panel";
+  const Vista = { panel: PanelView, mapa: MapaView, propiedades: PropiedadesView, cobranza: CobranzaView, disponibles: DisponiblesView, contratos: ContratosView, bitacora: BitacoraView, config: ConfigView }[vistaOk];
+
+  return (
+    <Ctx.Provider value={ctx}>
+      <style>{css}</style>
+      <div className="shell">
+        <aside className={"sidebar" + (menu ? " open" : "")}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 12px" }}>
+            <div style={{ width: 34, height: 34, borderRadius: 9, background: C.sidebarActive, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🏢</div>
+            <div><div style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>Alma Arriendos</div><div style={{ color: "rgba(255,255,255,.4)", fontSize: 10.5 }}>{st.empresa.nombre}</div></div>
+          </div>
+          {grupos.map(g => (
+            <div key={g}>
+              <div className="nav-group-label">{g}</div>
+              {vistas.filter(v => v.grupo === g).map(v => (
+                <button key={v.id} className={"nav-item" + (vistaOk === v.id ? " active" : "")} onClick={() => { setVista(v.id); setMenu(false); }}>
+                  <span>{v.icono}</span>{v.label}{v.id === "cobranza" && atrasados > 0 && <span className="nav-badge">{atrasados}</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+          <div style={{ marginTop: "auto", padding: "12px 8px 0", borderTop: "1px solid rgba(255,255,255,.08)" }}>
+            <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{user.nombre}</div>
+            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{user.rol === "dueno" ? "Dueño" : "Secretaria"}</div>
+            <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { sesion.set(null); setUserId(null); setVista("panel"); setFicha(null); }}>↩ Cerrar sesión</button>
+          </div>
+        </aside>
+        <div className="main">
+          <div className="topbar">
+            <div className="row">
+              <button className="icon-btn menu-btn" onClick={() => setMenu(true)}>☰</button>
+              <span style={{ fontWeight: 700 }}>{VISTAS.find(v => v.id === vistaOk)?.label}</span>
+            </div>
+            <div className="row">
+              <span className="tag hide-sm" style={{ background: C.blueDim, color: C.blue }}>UF {fmtCLP(ctx.uf)}</span>
+              {atrasados > 0 && <button className="tag" style={{ background: EST.atrasado.bg, color: EST.atrasado.color, border: "none", cursor: "pointer" }} onClick={() => setVista("cobranza")}>⚠️ {atrasados} atrasado{atrasados > 1 ? "s" : ""}</button>}
+            </div>
+          </div>
+          <div className="content"><Vista /></div>
+        </div>
+      </div>
+      {ficha && <FichaDrawer propId={ficha.propId} unidadId={ficha.unidadId} onClose={() => setFicha(null)} />}
+      {toastMsg && <div className="toast">{toastMsg}</div>}
+    </Ctx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
