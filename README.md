@@ -1,9 +1,9 @@
 # erp-alma
 almibarcurico-ai
 
-## Alma Arriendos (`arriendos.html`)
+## Alma Arriendos (`arriendos/`)
 
-Plataforma de gestión de arriendos para propiedades y centros comerciales. Se abre directamente en el navegador.
+Plataforma de gestión de arriendos para propiedades y centros comerciales. Es una sola página (`arriendos/index.html`) publicada en Vercel en el proyecto `alma-arriendos` (directorio raíz `arriendos`).
 
 - **Mapa interactivo** (mapa/satélite) con todas las propiedades y locales. El color indica el estado de cobro (atrasado, vence hoy, por vencer, pendiente, pagado, desocupada). Al pasar el mouse se ven los datos generales y al hacer clic se abre la ficha.
 - **Ficha completa** con los datos de la propiedad, del arrendatario y del arriendo (fechas, día de pago, renta en UF o CLP, garantía), además de fotos, pagos y documentos.
