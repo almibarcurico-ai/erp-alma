@@ -15,6 +15,9 @@
   <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 
+  <!-- Supabase (datos, login y tiempo real) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+
   <!-- Babel standalone for JSX -->
   <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
 
@@ -203,7 +206,7 @@ const css = `
 
 
 // ─── UTILIDADES ───────────────────────────────────────────────────────────────
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const uid = () => crypto.randomUUID();
 const pad = n => String(n).padStart(2, "0");
 const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const parseISO = s => { if (!s) return null; const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
@@ -226,11 +229,6 @@ const linkWA = (tel, msg) => `https://wa.me/${telWA(tel)}?text=${encodeURICompon
 const linkMail = (to, asunto, cuerpo) => `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
 const CATEGORIAS = { casa:"Casa", depto:"Departamento", oficina:"Oficina", local:"Local comercial", bodega:"Bodega", terreno:"Terreno", otro:"Otro" };
 const ICONO = { casa:"🏠", depto:"🏢", oficina:"💼", local:"🏬", bodega:"📦", terreno:"🌳", otro:"📍", centro:"🛍️" };
-
-async function sha256(txt) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(txt));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
 
 function comprimirImagen(file, max = 1200, calidad = 0.72) {
   return new Promise((res, rej) => {
@@ -273,46 +271,191 @@ function descargarWord(nombre, html) {
 }
 
 
-// ─── ALMACENAMIENTO (IndexedDB, con sincronización entre pestañas) ────────────
-// Los datos viven en el navegador de este equipo. Para usar la plataforma desde
-// varios equipos a la vez hay que conectar un backend (ver README).
-const Store = {
-  KEY: "estado",
-  _db: null,
-  open() {
-    if (this._db) return Promise.resolve(this._db);
-    return new Promise((res, rej) => {
+// ─── DATOS EN SUPABASE ────────────────────────────────────────────────────────
+// La clave pública (anon) puede ir en el navegador: lo que cada usuario puede
+// leer o escribir lo deciden las políticas RLS de la base (supabase/migrations).
+const SUPABASE_URL = "https://xieoddpllbxtwqmhgkui.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhpZW9kZHBsbGJ4dHdxbWhna3VpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MzMzNDYsImV4cCI6MjEwODEwOTM0Nn0.odxeZncpiyRthgHVRvXLkDISzbjAT21_G1S_OIOa5XU";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const num = v => v === "" || v == null || isNaN(Number(v)) ? null : Number(v);
+const local = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+async function q(consulta) {
+  const { data, error } = await consulta;
+  if (error) throw error;
+  return data;
+}
+
+// PostgREST entrega máximo 1000 filas por consulta: se pide por páginas
+async function todas(crear) {
+  const out = [];
+  for (let desde = 0; ; desde += 1000) {
+    const filas = await q(crear().range(desde, desde + 999));
+    out.push(...filas);
+    if (filas.length < 1000) return out;
+  }
+}
+
+function mensajeError(e) {
+  const m = (e && (e.message || e.error_description)) || String(e);
+  if (/row-level security|permission denied/i.test(m)) return "No tienes permiso para esta acción (o la suscripción está suspendida).";
+  if (/Invalid login credentials/i.test(m)) return "Correo o clave incorrectos.";
+  if (/Email not confirmed/i.test(m)) return "Confirma tu correo con el enlace que te enviamos antes de ingresar.";
+  if (/User already registered/i.test(m)) return "Ese correo ya tiene cuenta. Ingresa con tu clave.";
+  if (/Failed to fetch|NetworkError/i.test(m)) return "Sin conexión con el servidor. Revisa tu internet.";
+  return m;
+}
+
+const aContrato = (c, pagos) => ({
+  id: c.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: c.termino || "", diaPago: c.dia_pago, moneda: c.moneda,
+  valor: Number(c.valor), garantia: c.garantia == null ? "" : Number(c.garantia), multa: c.multa,
+  multasCondonadas: Object.fromEntries((c.multas_condonadas || []).map(p => [p, true])),
+  terminado: c.terminado,
+  pagos: pagos.filter(p => p.contrato_id === c.id).map(p => ({
+    id: p.id, periodo: p.periodo, fecha: p.fecha, ufDia: p.uf_dia == null ? null : Number(p.uf_dia),
+    montoCLP: p.monto_clp, multaCLP: p.multa_clp, metodo: p.medio || "", obs: p.obs || "",
+    registradoPor: p.registrado_nombre || "", registrado: Date.parse(p.creado),
+  })),
+});
+const vacio = v => v == null ? "" : v;
+
+async function cargarEmpresa(E) {
+  const f = t => () => sb.from(t).select("*").eq("empresa_id", E);
+  const [emp, sus, props, unis, cons, pags, docs, ints, bit, mies, invs] = await Promise.all([
+    q(sb.from("empresas").select("*").eq("id", E).single()),
+    q(sb.from("suscripciones").select("*, planes(nombre, max_unidades)").eq("empresa_id", E).maybeSingle()),
+    todas(() => f("propiedades")().order("creado")),
+    todas(() => f("unidades")().order("orden")),
+    todas(f("contratos")),
+    todas(f("pagos")),
+    todas(() => f("documentos")().order("creado", { ascending: false })),
+    todas(() => f("interesados")().order("creado", { ascending: false })),
+    q(f("bitacora")().order("creado", { ascending: false }).limit(1000)),
+    q(f("miembros")()),
+    q(f("invitaciones")().is("aceptada", null)),
+  ]);
+  const propDeUnidad = Object.fromEntries(unis.map(u => [u.id, u.propiedad_id]));
+  return {
+    empresa: { id: emp.id, nombre: emp.nombre, rut: vacio(emp.rut), direccion: vacio(emp.direccion), email: vacio(emp.email), telefono: vacio(emp.telefono), representante: vacio(emp.representante), rutRep: vacio(emp.rut_rep) },
+    suscripcion: sus ? { planId: sus.plan_id, plan: sus.planes && sus.planes.nombre, maxUnidades: sus.planes && sus.planes.max_unidades, estado: sus.estado, pruebaHasta: sus.prueba_hasta, vigenteHasta: sus.vigente_hasta } : null,
+    uf: local.get("alma-uf") || { valor: 39800, fecha: "", auto: true },
+    usuarios: mies.map(m => ({ id: m.user_id, nombre: m.nombre, rol: m.rol, activo: m.activo })),
+    invitaciones: invs,
+    propiedades: props.map(p => ({
+      id: p.id, tipo: p.tipo, nombre: p.nombre, direccion: vacio(p.direccion), comuna: vacio(p.comuna), ciudad: vacio(p.ciudad),
+      lat: p.lat, lng: p.lng, rol: vacio(p.rol_sii), notas: vacio(p.notas), arrendador: p.arrendador || {},
+      unidades: unis.filter(u => u.propiedad_id === p.id).map(u => {
+        const vig = cons.find(c => c.unidad_id === u.id && c.vigente);
+        return {
+          id: u.id, nombre: u.nombre, categoria: u.categoria, m2: vacio(u.m2), dormitorios: vacio(u.dormitorios), banos: vacio(u.banos),
+          estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [],
+          contrato: vig ? aContrato(vig, pags) : null,
+          historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags)),
+        };
+      }),
+    })),
+    documentos: docs.map(d => ({ id: d.id, propId: propDeUnidad[d.unidad_id], unidadId: d.unidad_id, tipo: d.tipo, titulo: d.titulo, fecha: d.creado.slice(0, 10), autor: d.autor_nombre || "", html: d.html })),
+    interesados: ints.map(x => ({ id: x.id, nombre: vacio(x.nombre), telefono: vacio(x.telefono), email: vacio(x.email), nota: vacio(x.nota), canal: vacio(x.canal), por: x.por_nombre || "", propId: propDeUnidad[x.unidad_id], unidadId: x.unidad_id, fecha: x.creado.slice(0, 10) })),
+    bitacora: bit.map(b => ({ t: Date.parse(b.creado), u: b.usuario || "—", a: b.accion })),
+  };
+}
+
+// Convierte el estado de la app en filas por tabla, para comparar y guardar solo lo que cambió
+function filas(st, E) {
+  const t = { empresas: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), documentos: new Map(), interesados: new Map() };
+  const e = st.empresa, n = v => v === "" || v == null ? null : v;
+  t.empresas.set(e.id, { id: e.id, nombre: e.nombre, rut: n(e.rut), direccion: n(e.direccion), email: n(e.email), telefono: n(e.telefono), representante: n(e.representante), rut_rep: n(e.rutRep) });
+  st.propiedades.forEach(p => {
+    t.propiedades.set(p.id, { id: p.id, empresa_id: E, tipo: p.tipo, nombre: p.nombre, direccion: n(p.direccion), comuna: n(p.comuna), ciudad: n(p.ciudad),
+      lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {} });
+    p.unidades.forEach((u, i) => {
+      t.unidades.set(u.id, { id: u.id, empresa_id: E, propiedad_id: p.id, nombre: u.nombre, categoria: u.categoria || "otro", m2: num(u.m2), dormitorios: num(u.dormitorios),
+        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], orden: i });
+      const contratos = [...(u.historial || []).map(c => [c, false]), ...(u.contrato ? [[u.contrato, true]] : [])];
+      contratos.forEach(([c, vigente]) => {
+        t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
+          dia_pago: Number(c.diaPago), moneda: c.moneda, valor: num(c.valor), garantia: num(c.garantia), multa: c.multa || { cobrar: false },
+          multas_condonadas: Object.keys(c.multasCondonadas || {}).filter(k => c.multasCondonadas[k]).sort(),
+          vigente, terminado: vigente ? null : n(c.terminado) });
+        (c.pagos || []).forEach(pg => t.pagos.set(pg.id, { id: pg.id, empresa_id: E, contrato_id: c.id, periodo: pg.periodo, fecha: pg.fecha,
+          uf_dia: num(pg.ufDia), monto_clp: Math.round(pg.montoCLP || 0), multa_clp: Math.round(pg.multaCLP || 0), medio: n(pg.metodo), obs: n(pg.obs), registrado_nombre: n(pg.registradoPor) }));
+      });
+    });
+  });
+  st.documentos.forEach(d => t.documentos.set(d.id, { id: d.id, empresa_id: E, unidad_id: d.unidadId, tipo: d.tipo, titulo: d.titulo, html: d.html, autor_nombre: n(d.autor) }));
+  st.interesados.forEach(x => t.interesados.set(x.id, { id: x.id, empresa_id: E, unidad_id: x.unidadId, nombre: n(x.nombre), telefono: n(x.telefono), email: n(x.email), nota: n(x.nota), canal: n(x.canal), por_nombre: n(x.por) }));
+  return t;
+}
+
+const TABLAS = ["empresas", "propiedades", "unidades", "contratos", "pagos", "documentos", "interesados"];
+async function sincronizar(prev, next, E) {
+  const a = filas(prev, E), b = filas(next, E);
+  const creadas = [];
+  try {
+    await escribir(a, b, creadas);
+  } catch (e) {
+    // Sin transacción entre tablas: si algo falla a mitad, se deshace lo recién creado (más nuevo primero)
+    for (const [t, ids] of creadas.reverse()) await sb.from(t).delete().in("id", ids);
+    throw e;
+  }
+}
+async function escribir(a, b, creadas) {
+  for (const t of TABLAS) {
+    const nuevas = [], cambiadas = [];
+    for (const r of b[t].values()) {
+      const antes = a[t].get(r.id);
+      if (!antes) nuevas.push(r);
+      else if (JSON.stringify(antes) !== JSON.stringify(r)) cambiadas.push(r);
+    }
+    // Fila por fila y no con upsert: un upsert dispara el límite de unidades del plan aunque sea una edición.
+    // Un contrato que termina se guarda antes que el nuevo vigente de la misma unidad.
+    if (t === "contratos") cambiadas.sort((x, y) => Number(x.vigente) - Number(y.vigente));
+    for (const r of cambiadas) await q(sb.from(t).update(r).eq("id", r.id));
+    const lote = t === "unidades" ? 10 : 100; // las unidades llevan fotos
+    for (let i = 0; i < nuevas.length; i += lote) {
+      const parte = nuevas.slice(i, i + lote);
+      await q(sb.from(t).insert(parte));
+      creadas.push([t, parte.map(r => r.id)]);
+    }
+  }
+  for (const t of [...TABLAS].reverse()) {
+    const borrar = [...a[t].keys()].filter(id => !b[t].has(id));
+    if (borrar.length) await q(sb.from(t).delete().in("id", borrar));
+  }
+}
+
+// Respaldos y datos antiguos: se copian con ids nuevos para no chocar con los existentes
+function conIdsNuevos(d) {
+  const mapa = {};
+  const id = viejo => mapa[viejo] || (mapa[viejo] = uid());
+  const contrato = c => ({ ...c, id: uid(), pagos: (c.pagos || []).map(pg => ({ ...pg, id: uid() })) });
+  const propiedades = (d.propiedades || []).map(p => ({ ...p, id: id(p.id), arrendador: p.arrendador || {},
+    unidades: (p.unidades || []).map(u => ({ ...u, id: id(u.id), fotos: u.fotos || [], contrato: u.contrato ? contrato(u.contrato) : null, historial: (u.historial || []).map(contrato) })) }));
+  const documentos = (d.documentos || []).filter(x => mapa[x.unidadId]).map(x => ({ ...x, id: uid(), propId: mapa[x.propId], unidadId: mapa[x.unidadId] }));
+  const interesados = (d.interesados || []).filter(x => mapa[x.unidadId]).map(x => ({ ...x, id: uid(), propId: mapa[x.propId], unidadId: mapa[x.unidadId] }));
+  return { propiedades, documentos, interesados };
+}
+
+// Datos que la versión anterior guardaba en el navegador (IndexedDB), para importarlos
+function leerDatosDelNavegador() {
+  return new Promise(res => {
+    try {
       const r = indexedDB.open("alma-arriendos", 1);
       r.onupgradeneeded = () => r.result.createObjectStore("kv");
-      r.onsuccess = () => { this._db = r.result; res(r.result); };
-      r.onerror = () => rej(r.error);
-    });
-  },
-  async load() {
-    try {
-      const db = await this.open();
-      return await new Promise((res, rej) => {
-        const q = db.transaction("kv").objectStore("kv").get(this.KEY);
-        q.onsuccess = () => res(q.result || null); q.onerror = () => rej(q.error);
-      });
-    } catch { try { return JSON.parse(localStorage.getItem("alma-arriendos") || "null"); } catch { return null; } }
-  },
-  async save(v) {
-    try {
-      const db = await this.open();
-      await new Promise((res, rej) => {
-        const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, this.KEY);
-        t.oncomplete = res; t.onerror = () => rej(t.error);
-      });
-    } catch { try { localStorage.setItem("alma-arriendos", JSON.stringify(v)); } catch { alert("No se pudo guardar: almacenamiento lleno. Exporta un respaldo y elimina fotos."); } }
-  },
-};
-const canal = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("alma-arriendos") : null;
-
-const sesion = {
-  get() { try { return sessionStorage.getItem("alma-arr-user"); } catch { return null; } },
-  set(id) { try { id ? sessionStorage.setItem("alma-arr-user", id) : sessionStorage.removeItem("alma-arr-user"); } catch {} },
-};
+      r.onerror = () => res(null);
+      r.onsuccess = () => {
+        try {
+          const g = r.result.transaction("kv").objectStore("kv").get("estado");
+          g.onsuccess = () => res(g.result || null); g.onerror = () => res(null);
+        } catch { res(null); }
+      };
+    } catch { res(null); }
+  });
+}
 
 async function obtenerUF() {
   const r = await fetch("https://mindicador.cl/api/uf");
@@ -608,9 +751,8 @@ function datosEjemplo(hoy) {
     return out;
   };
   const contrato = (nombre, rut, email, tel, giro, diaPago, valor, multa, pagosOffset, terminoMeses = 16) => ({
-    arrendatario: { nombre, rut, email, telefono: tel, giro, domicilio: "" },
+    id: uid(), arrendatario: { nombre, rut, email, telefono: tel, giro, domicilio: "" },
     inicio, termino: termino(terminoMeses), diaPago, moneda: "UF", valor, garantia: valor,
-    reajuste: "UF (se reajusta automáticamente)",
     multa: multa || { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
     pagos: pagosHasta(diaPago, valor, pagosOffset), multasCondonadas: {},
   });
@@ -639,20 +781,6 @@ function datosEjemplo(hoy) {
       ] },
   ];
 }
-
-function estadoInicial(conEjemplo, hoy) {
-  return {
-    version: 1,
-    empresa: { nombre: "Inversiones Alma SpA", rut: "", direccion: "", email: "", telefono: "", representante: "", rutRep: "" },
-    uf: { valor: 39800, fecha: toISO(hoy), auto: true },
-    usuarios: [],
-    propiedades: conEjemplo ? datosEjemplo(hoy) : [],
-    documentos: [],
-    interesados: [],
-    bitacora: [],
-  };
-}
-
 
 // ─── CONTEXTO ─────────────────────────────────────────────────────────────────
 const Ctx = createContext(null);
@@ -809,44 +937,133 @@ function usePuntos(propiedades, filtro, soloLibres = false) {
 
 
 // ─── LOGIN ────────────────────────────────────────────────────────────────────
-function Acceso({ st, onEntrar, onCrear }) {
-  const primera = !st || !st.usuarios.length;
-  const [f, setF] = useState({ nombre: "", usuario: "", clave: "", clave2: "", ejemplo: true });
-  const [error, setError] = useState("");
+function PantallaCentrada({ children, ancho = 400 }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: `linear-gradient(135deg, ${C.sidebar}, ${C.blueLight})` }}>
+      <div className="card fade-up" style={{ width: "100%", maxWidth: ancho, padding: 28 }}>
+        <div style={{ fontSize: 34 }}>🏢</div>
+        <div className="h1" style={{ marginTop: 6 }}>Alma Arriendos</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const urlRetorno = () => location.href.split("#")[0];
+
+function Acceso() {
+  const [modo, setModo] = useState("entrar");
+  const [f, setF] = useState({ nombre: "", email: "", clave: "", clave2: "" });
+  const [msg, setMsg] = useState({ error: "", ok: "" });
+  const [enviando, setEnviando] = useState(false);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
 
   const enviar = async e => {
-    e.preventDefault(); setError("");
-    if (primera) {
-      if (!f.nombre || !f.usuario || f.clave.length < 6) return setError("Completa nombre, usuario y una clave de al menos 6 caracteres.");
-      if (f.clave !== f.clave2) return setError("Las claves no coinciden.");
-      onCrear({ id: uid(), nombre: f.nombre, usuario: f.usuario.trim().toLowerCase(), rol: "dueno", hash: await sha256(f.clave) }, f.ejemplo);
-    } else {
-      const u = st.usuarios.find(x => x.usuario === f.usuario.trim().toLowerCase());
-      if (!u || u.hash !== await sha256(f.clave)) return setError("Usuario o clave incorrectos.");
-      if (u.activo === false) return setError("Este usuario está desactivado.");
-      onEntrar(u);
-    }
+    e.preventDefault(); setMsg({ error: "", ok: "" });
+    const email = f.email.trim().toLowerCase();
+    if (!email) return setMsg({ error: "Ingresa tu correo." });
+    setEnviando(true);
+    try {
+      if (modo === "entrar") {
+        await q(sb.auth.signInWithPassword({ email, password: f.clave }));
+      } else if (modo === "registro") {
+        if (!f.nombre.trim()) throw new Error("Ingresa tu nombre.");
+        if (f.clave.length < 8) throw new Error("La clave debe tener al menos 8 caracteres.");
+        if (f.clave !== f.clave2) throw new Error("Las claves no coinciden.");
+        const r = await q(sb.auth.signUp({ email, password: f.clave, options: { data: { nombre: f.nombre.trim() }, emailRedirectTo: urlRetorno() } }));
+        if (!r.session) setMsg({ ok: "Te enviamos un correo para confirmar tu cuenta. Ábrelo y luego ingresa con tu clave." });
+      } else {
+        await q(sb.auth.resetPasswordForEmail(email, { redirectTo: urlRetorno() }));
+        setMsg({ ok: "Si el correo tiene cuenta, te llegará un enlace para crear una clave nueva." });
+      }
+    } catch (err) { setMsg({ error: mensajeError(err) }); }
+    setEnviando(false);
   };
 
+  const titulos = { entrar: "Ingresa con tu cuenta", registro: "Crea tu cuenta (14 días gratis)", recuperar: "Recupera tu clave" };
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, background: `linear-gradient(135deg, ${C.sidebar}, ${C.blueLight})` }}>
-      <form onSubmit={enviar} className="card fade-up" style={{ width: "100%", maxWidth: 400, padding: 28 }}>
-        <div style={{ fontSize: 34 }}>🏢</div>
-        <div className="h1" style={{ marginTop: 6 }}>Alma Arriendos</div>
-        <div className="muted" style={{ marginBottom: 20 }}>{primera ? "Primer ingreso: crea la cuenta del dueño" : "Ingresa con tu usuario"}</div>
-        <div className="grid" style={{ gap: 12 }}>
-          {primera && <Campo label="Nombre"><input className="input" value={f.nombre} onChange={e => set("nombre", e.target.value)} placeholder="Ej: Hernán Maluenda" /></Campo>}
-          <Campo label="Usuario"><input className="input" value={f.usuario} onChange={e => set("usuario", e.target.value)} autoComplete="username" autoFocus /></Campo>
-          <Campo label="Clave"><input className="input" type="password" value={f.clave} onChange={e => set("clave", e.target.value)} autoComplete={primera ? "new-password" : "current-password"} /></Campo>
-          {primera && <Campo label="Repetir clave"><input className="input" type="password" value={f.clave2} onChange={e => set("clave2", e.target.value)} autoComplete="new-password" /></Campo>}
-          {primera && <label className="switch"><input type="checkbox" checked={f.ejemplo} onChange={e => set("ejemplo", e.target.checked)} />Cargar propiedades de ejemplo para probar</label>}
-          {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
-          <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }}>{primera ? "Crear cuenta e ingresar" : "Ingresar"}</button>
-        </div>
-        {primera && <div className="muted" style={{ marginTop: 14 }}>La secretaria se agrega después desde Configuración → Usuarios.</div>}
+    <PantallaCentrada>
+      <div className="muted" style={{ marginBottom: 20 }}>{titulos[modo]}</div>
+      <form onSubmit={enviar} className="grid" style={{ gap: 12 }}>
+        {modo === "registro" && <Campo label="Tu nombre"><input className="input" value={f.nombre} onChange={e => set("nombre", e.target.value)} autoComplete="name" /></Campo>}
+        <Campo label="Correo"><input className="input" type="email" value={f.email} onChange={e => set("email", e.target.value)} autoComplete="email" autoFocus /></Campo>
+        {modo !== "recuperar" && <Campo label="Clave"><input className="input" type="password" value={f.clave} onChange={e => set("clave", e.target.value)} autoComplete={modo === "registro" ? "new-password" : "current-password"} /></Campo>}
+        {modo === "registro" && <Campo label="Repetir clave"><input className="input" type="password" value={f.clave2} onChange={e => set("clave2", e.target.value)} autoComplete="new-password" /></Campo>}
+        {msg.error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{msg.error}</div>}
+        {msg.ok && <div style={{ color: C.success, fontSize: 12.5 }}>{msg.ok}</div>}
+        <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }} disabled={enviando}>
+          {enviando ? "Un momento…" : modo === "entrar" ? "Ingresar" : modo === "registro" ? "Crear cuenta" : "Enviar enlace"}
+        </button>
       </form>
-    </div>
+      <div className="row between" style={{ marginTop: 16, fontSize: 12.5 }}>
+        {modo !== "entrar" ? <a href="#" onClick={e => { e.preventDefault(); setModo("entrar"); setMsg({}); }}>‹ Ya tengo cuenta</a>
+          : <a href="#" onClick={e => { e.preventDefault(); setModo("registro"); setMsg({}); }}>Crear cuenta nueva</a>}
+        {modo === "entrar" && <a href="#" onClick={e => { e.preventDefault(); setModo("recuperar"); setMsg({}); }}>Olvidé mi clave</a>}
+      </div>
+      {modo === "registro" && <div className="muted" style={{ marginTop: 14 }}>Si te invitaron como secretaria, regístrate con el mismo correo de la invitación.</div>}
+    </PantallaCentrada>
+  );
+}
+
+function NuevaClave({ onListo }) {
+  const [clave, setClave] = useState("");
+  const [error, setError] = useState("");
+  const guardar = async e => {
+    e.preventDefault();
+    if (clave.length < 8) return setError("La clave debe tener al menos 8 caracteres.");
+    try { await q(sb.auth.updateUser({ password: clave })); onListo(); } catch (err) { setError(mensajeError(err)); }
+  };
+  return (
+    <PantallaCentrada>
+      <div className="muted" style={{ marginBottom: 20 }}>Crea tu clave nueva</div>
+      <form onSubmit={guardar} className="grid" style={{ gap: 12 }}>
+        <Campo label="Clave nueva"><input className="input" type="password" value={clave} onChange={e => setClave(e.target.value)} autoComplete="new-password" autoFocus /></Campo>
+        {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
+        <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }}>Guardar clave</button>
+      </form>
+    </PantallaCentrada>
+  );
+}
+
+function Bienvenida({ sesionSb, empresas, esAdmin, onElegir, onCreada }) {
+  const [f, setF] = useState({ empresa: "", rut: "", nombre: (sesionSb.user.user_metadata || {}).nombre || "" });
+  const [error, setError] = useState("");
+  const [creando, setCreando] = useState(!empresas.length);
+  const crear = async e => {
+    e.preventDefault(); setError("");
+    if (!f.empresa.trim()) return setError("Ingresa el nombre de la empresa.");
+    try { const id = await q(sb.rpc("crear_empresa", { p_nombre: f.empresa, p_rut: f.rut, p_nombre_usuario: f.nombre })); onCreada(id); }
+    catch (err) { setError(mensajeError(err)); }
+  };
+  return (
+    <PantallaCentrada ancho={460}>
+      <div className="muted" style={{ marginBottom: 16 }}>Hola {f.nombre || sesionSb.user.email}{esAdmin ? " · administrador de plataforma" : ""}</div>
+      {!creando ? (
+        <div className="grid" style={{ gap: 8 }}>
+          <div className="label">Elige la empresa</div>
+          {empresas.map(m => (
+            <div key={m.empresa_id} className="alert-row" onClick={() => onElegir(m.empresa_id)}>
+              <span style={{ fontSize: 18 }}>🏢</span>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{m.empresas ? m.empresas.nombre : "Empresa"}</div><div className="muted">{m.rol === "dueno" ? "Dueño" : "Secretaria"}</div></div>
+              <span className="muted">›</span>
+            </div>
+          ))}
+          <button className="btn btn-ghost" style={{ justifySelf: "start", marginTop: 6 }} onClick={() => setCreando(true)}>+ Crear otra empresa</button>
+        </div>
+      ) : (
+        <form onSubmit={crear} className="grid" style={{ gap: 12 }}>
+          <div style={{ fontSize: 13 }}>Crea tu empresa para empezar. Tienes <b>14 días de prueba</b> del plan Corredor (hasta 50 unidades).</div>
+          <Campo label="Nombre de la empresa"><input className="input" value={f.empresa} onChange={e => setF({ ...f, empresa: e.target.value })} placeholder="Ej: Inversiones Alma SpA" autoFocus /></Campo>
+          <Campo label="RUT de la empresa (opcional)"><input className="input" value={f.rut} onChange={e => setF({ ...f, rut: e.target.value })} /></Campo>
+          <Campo label="Tu nombre"><input className="input" value={f.nombre} onChange={e => setF({ ...f, nombre: e.target.value })} /></Campo>
+          {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
+          <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }}>Crear empresa</button>
+          {empresas.length > 0 && <button type="button" className="btn btn-ghost" onClick={() => setCreando(false)}>‹ Volver</button>}
+          <div className="muted">¿Te invitaron como secretaria? No crees una empresa: pide al dueño que te invite con este correo ({sesionSb.user.email}) y vuelve a ingresar.</div>
+        </form>
+      )}
+      <button className="btn btn-ghost btn-sm" style={{ marginTop: 16 }} onClick={() => sb.auth.signOut()}>↩ Cerrar sesión</button>
+    </PantallaCentrada>
   );
 }
 
@@ -1103,9 +1320,9 @@ function PropiedadesView() {
 
 // ─── FORMULARIOS ──────────────────────────────────────────────────────────────
 const contratoVacio = () => ({
-  arrendatario: { nombre: "", rut: "", email: "", telefono: "", giro: "", domicilio: "", representante: "" },
+  id: uid(), arrendatario: { nombre: "", rut: "", email: "", telefono: "", giro: "", domicilio: "", representante: "" },
   inicio: toISO(new Date()), termino: toISO(new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate() - 1)),
-  diaPago: 5, moneda: "UF", valor: "", garantia: "", reajuste: "UF (se reajusta automáticamente)",
+  diaPago: 5, moneda: "UF", valor: "", garantia: "",
   multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
   pagos: [], multasCondonadas: {},
 });
@@ -1266,6 +1483,9 @@ function PropiedadForm({ inicial, onClose }) {
     if (!p.nombre.trim()) return toast("Falta el nombre de la propiedad");
     if (p.lat == null || p.lng == null || isNaN(p.lat) || isNaN(p.lng)) return toast("Ubica la propiedad en el mapa (busca la dirección o haz clic en el mapa)");
     if (p.tipo === "centro" && !p.unidades.length) return toast("Agrega al menos un local");
+    const max = st.suscripcion && st.suscripcion.maxUnidades;
+    const otras = listarUnidades(st).filter(x => x.p.id !== p.id).length;
+    if (max && otras + p.unidades.length > max) return toast(`Tu plan ${st.suscripcion.plan} permite hasta ${max} unidades (tienes ${otras}). Contacta a HM Software para cambiar de plan.`);
     const malos = p.unidades.filter(u => u.contrato && (!u.contrato.arrendatario.nombre || !u.contrato.valor));
     if (malos.length) return toast(`Completa arrendatario y renta en: ${malos.map(u => u.nombre).join(", ")}`);
     const lat = Number(p.lat), lng = Number(p.lng);
@@ -2002,65 +2222,86 @@ function BitacoraView() {
 }
 
 function ConfigView() {
-  const { st, update, user, toast, recargarUF } = useApp();
+  const { st, update, user, toast, recargarUF, recargar } = useApp();
   const [emp, setEmp] = useState(st.empresa);
-  const [nu, setNu] = useState({ nombre: "", usuario: "", clave: "", rol: "secretaria" });
-  const [clave, setClave] = useState({ id: "", nueva: "" });
+  const [inv, setInv] = useState({ nombre: "", email: "", rol: "secretaria" });
+  const [clave, setClave] = useState("");
+  const [haylocal, setHayLocal] = useState(false);
   const archivo = useRef(null);
+  const E = st.empresa.id;
+  const sus = st.suscripcion;
 
-  const agregarUsuario = async () => {
-    if (!nu.nombre || !nu.usuario || nu.clave.length < 6) return toast("Completa nombre, usuario y clave (mín. 6 caracteres)");
-    const usuario = nu.usuario.trim().toLowerCase();
-    if (st.usuarios.some(x => x.usuario === usuario)) return toast("Ese usuario ya existe");
-    const hash = await sha256(nu.clave);
-    update(s => { s.usuarios.push({ id: uid(), nombre: nu.nombre, usuario, rol: nu.rol, hash, activo: true }); }, `Creó el usuario ${usuario} (${nu.rol})`);
-    setNu({ nombre: "", usuario: "", clave: "", rol: "secretaria" });
-    toast("Usuario creado");
+  useEffect(() => { leerDatosDelNavegador().then(d => setHayLocal(!!(d && d.propiedades && d.propiedades.length))); }, []);
+
+  const accion = async (fn, ok, registro) => {
+    try {
+      await fn();
+      if (registro) await q(sb.from("bitacora").insert({ empresa_id: E, user_id: user.id, usuario: user.nombre, accion: registro }));
+      toast(ok); recargar();
+    } catch (e) { toast(mensajeError(e)); }
   };
-  const cambiarClave = async () => {
-    if (clave.nueva.length < 6) return toast("La clave debe tener al menos 6 caracteres");
-    const hash = await sha256(clave.nueva);
-    const u = st.usuarios.find(x => x.id === clave.id);
-    update(s => { s.usuarios.find(x => x.id === clave.id).hash = hash; }, `Cambió la clave de ${u.usuario}`);
-    setClave({ id: "", nueva: "" }); toast("Clave actualizada");
+  const invitar = () => {
+    const email = inv.email.trim().toLowerCase();
+    if (!inv.nombre.trim() || !/^\S+@\S+\.\S+$/.test(email)) return toast("Ingresa nombre y un correo válido");
+    accion(() => q(sb.from("invitaciones").insert({ empresa_id: E, email, nombre: inv.nombre.trim(), rol: inv.rol })),
+      "Invitación creada", `Invitó a ${inv.nombre.trim()} (${email}) como ${inv.rol}`);
+    setInv({ nombre: "", email: "", rol: "secretaria" });
+  };
+  const mensajeInvitacion = i => `Hola ${i.nombre}, te invité a ${st.empresa.nombre} en Alma Arriendos. Crea tu cuenta con este correo (${i.email}) en: ${urlRetorno()}`;
+  const cambiarClave = () => {
+    if (clave.length < 8) return toast("La clave debe tener al menos 8 caracteres");
+    accion(() => q(sb.auth.updateUser({ password: clave })), "Clave actualizada");
+    setClave("");
+  };
+  const importar = (d, origen) => {
+    const r = conIdsNuevos(d);
+    if (!r.propiedades.length) return toast("No hay propiedades para importar");
+    if (!confirm(`Se agregarán ${r.propiedades.length} propiedades ${origen}. ¿Continuar?`)) return;
+    update(s => { s.propiedades.push(...r.propiedades); s.documentos.unshift(...r.documentos); s.interesados.unshift(...r.interesados); }, `Importó ${r.propiedades.length} propiedades ${origen}`);
+    toast("Importando…");
   };
   const exportar = () => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(st)], { type: "application/json" }));
     a.download = `respaldo-arriendos-${toISO(new Date())}.json`; a.click();
   };
-  const importar = e => {
+  const leerArchivo = e => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = () => {
-      try {
-        const d = JSON.parse(r.result);
-        if (!d.propiedades || !d.usuarios) throw new Error();
-        if (!confirm("Esto reemplazará todos los datos actuales por los del respaldo. ¿Continuar?")) return;
-        update(s => { Object.keys(s).forEach(k => delete s[k]); Object.assign(s, d); }, "Restauró un respaldo");
-        toast("Respaldo restaurado");
-      } catch { toast("Archivo de respaldo inválido"); }
-    };
+    r.onload = () => { try { const d = JSON.parse(r.result); if (!d.propiedades) throw new Error(); importar(d, "desde el respaldo"); } catch { toast("Archivo de respaldo inválido"); } };
     r.readAsText(f); e.target.value = "";
   };
 
   return (
     <div className="grid fade-up" style={{ gap: 16 }}>
       <div className="h1">Configuración</div>
+
+      {sus && (
+        <div className="card">
+          <div className="h2">Suscripción</div>
+          <dl className="kv">
+            <dt>Plan</dt><dd>{sus.plan}{sus.maxUnidades ? ` (hasta ${sus.maxUnidades} unidades)` : ""}</dd>
+            <dt>Estado</dt><dd>{{ prueba: "Prueba", activa: "Activa", morosa: "Morosa", suspendida: "Suspendida", cancelada: "Cancelada" }[sus.estado] || sus.estado}{sus.estado === "prueba" && sus.pruebaHasta ? ` hasta el ${fmtFecha(sus.pruebaHasta)}` : ""}</dd>
+            <dt>Unidades en uso</dt><dd>{listarUnidades(st).length}</dd>
+          </dl>
+          <div className="muted" style={{ marginTop: 8 }}>Para cambiar de plan o pagar la suscripción, contacta a HM Software.</div>
+        </div>
+      )}
+
       <div className="card">
         <div className="h2">Datos de la empresa (arrendador por defecto)</div>
         <div className="form-grid">
           {[["nombre", "Razón social"], ["rut", "RUT"], ["direccion", "Domicilio"], ["email", "Correo"], ["telefono", "Teléfono / WhatsApp"], ["representante", "Representante legal"], ["rutRep", "RUT representante"]].map(([k, l]) =>
             <Campo key={k} label={l}><input className="input" value={emp[k] || ""} onChange={e => setEmp({ ...emp, [k]: e.target.value })} /></Campo>)}
         </div>
-        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => { update(s => { s.empresa = emp; }, "Actualizó los datos de la empresa"); toast("Guardado"); }}>Guardar</button>
+        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => { if (!emp.nombre.trim()) return toast("Falta la razón social"); update(s => { s.empresa = { ...emp }; }, "Actualizó los datos de la empresa"); toast("Guardado"); }}>Guardar</button>
       </div>
 
       <div className="card">
         <div className="h2">Valor UF</div>
         <div className="row">
           <div style={{ width: 160 }}><input className="input" type="number" step="0.01" value={st.uf.valor} onChange={e => update(s => { s.uf = { valor: Number(e.target.value) || 0, fecha: toISO(new Date()), auto: false }; })} /></div>
-          <span className="muted">Actualizada: {fmtFecha(st.uf.fecha)} {st.uf.auto ? "(automática, mindicador.cl)" : "(manual)"}</span>
+          <span className="muted">Actualizada: {fmtFecha(st.uf.fecha || null)} {st.uf.auto ? "(automática, mindicador.cl)" : "(manual, solo en este equipo)"}</span>
           <button className="btn btn-ghost btn-sm" onClick={recargarUF}>Actualizar desde internet</button>
         </div>
       </div>
@@ -2069,40 +2310,46 @@ function ConfigView() {
         <div className="h2">Usuarios</div>
         <div className="muted" style={{ marginBottom: 10 }}>La <b>secretaria</b> puede agregar y editar propiedades, registrar pagos, enviar avisos y generar contratos. Solo el <b>dueño</b> ve los ingresos, decide las multas (activar/condonar), elimina datos y administra usuarios. Todo queda en la bitácora.</div>
         <div className="table-wrap"><table>
-          <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
-          <tbody>{st.usuarios.map(u => (
-            <tr key={u.id}><td>{u.nombre}</td><td className="mono">{u.usuario}</td><td>{u.rol === "dueno" ? "Dueño" : "Secretaria"}</td>
-              <td>{u.activo === false ? <span className="tag" style={{ background: C.dangerBg, color: C.danger }}>Desactivado</span> : <span className="tag" style={{ background: C.successBg, color: C.success }}>Activo</span>}</td>
-              <td><div className="row" style={{ flexWrap: "nowrap" }}>
-                <button className="btn btn-ghost btn-sm" onClick={() => setClave({ id: u.id, nueva: "" })}>Cambiar clave</button>
-                {u.id !== user.id && <button className="btn btn-ghost btn-sm" onClick={() => update(s => { const x = s.usuarios.find(y => y.id === u.id); x.activo = x.activo === false; }, `${u.activo === false ? "Activó" : "Desactivó"} al usuario ${u.usuario}`)}>{u.activo === false ? "Activar" : "Desactivar"}</button>}
-              </div></td></tr>))}
+          <thead><tr><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+          <tbody>
+            {st.usuarios.map(u => (
+              <tr key={u.id}><td>{u.nombre}{u.id === user.id ? " (tú)" : ""}</td><td>{u.rol === "dueno" ? "Dueño" : "Secretaria"}</td>
+                <td>{u.activo === false ? <span className="tag" style={{ background: C.dangerBg, color: C.danger }}>Desactivado</span> : <span className="tag" style={{ background: C.successBg, color: C.success }}>Activo</span>}</td>
+                <td>{u.id !== user.id && <button className="btn btn-ghost btn-sm" onClick={() => accion(() => q(sb.from("miembros").update({ activo: u.activo === false }).eq("empresa_id", E).eq("user_id", u.id)), "Listo", `${u.activo === false ? "Activó" : "Desactivó"} a ${u.nombre}`)}>{u.activo === false ? "Activar" : "Desactivar"}</button>}</td>
+              </tr>))}
+            {st.invitaciones.map(i => (
+              <tr key={i.email}><td>{i.nombre}<div className="muted">{i.email}</div></td><td>{i.rol === "dueno" ? "Dueño" : "Secretaria"}</td>
+                <td><span className="tag" style={{ background: C.warningBg, color: C.warning }}>Invitación pendiente</span></td>
+                <td><div className="row" style={{ flexWrap: "nowrap" }}>
+                  <a className="btn btn-mail btn-sm" href={linkMail(i.email, `Invitación a ${st.empresa.nombre}`, mensajeInvitacion(i))}>Enviar</a>
+                  <button className="btn btn-ghost btn-sm" onClick={() => accion(() => q(sb.from("invitaciones").delete().eq("empresa_id", E).eq("email", i.email)), "Invitación anulada", `Anuló la invitación de ${i.email}`)}>Anular</button>
+                </div></td>
+              </tr>))}
           </tbody></table></div>
-        {clave.id && (
-          <div className="row" style={{ marginTop: 10 }}>
-            <span>Nueva clave para <b>{st.usuarios.find(x => x.id === clave.id)?.usuario}</b>:</span>
-            <div style={{ width: 200 }}><input className="input" type="password" value={clave.nueva} onChange={e => setClave({ ...clave, nueva: e.target.value })} /></div>
-            <button className="btn btn-primary btn-sm" onClick={cambiarClave}>Guardar</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setClave({ id: "", nueva: "" })}>Cancelar</button>
-          </div>
-        )}
-        <div className="label" style={{ marginTop: 16 }}>Agregar usuario</div>
+        <div className="label" style={{ marginTop: 16 }}>Invitar usuario</div>
         <div className="form-grid">
-          <Campo label="Nombre"><input className="input" value={nu.nombre} onChange={e => setNu({ ...nu, nombre: e.target.value })} /></Campo>
-          <Campo label="Usuario"><input className="input" value={nu.usuario} onChange={e => setNu({ ...nu, usuario: e.target.value })} /></Campo>
-          <Campo label="Clave"><input className="input" type="password" value={nu.clave} onChange={e => setNu({ ...nu, clave: e.target.value })} autoComplete="new-password" /></Campo>
-          <Campo label="Rol"><select className="select" value={nu.rol} onChange={e => setNu({ ...nu, rol: e.target.value })}><option value="secretaria">Secretaria</option><option value="dueno">Dueño</option></select></Campo>
+          <Campo label="Nombre"><input className="input" value={inv.nombre} onChange={e => setInv({ ...inv, nombre: e.target.value })} /></Campo>
+          <Campo label="Correo"><input className="input" type="email" value={inv.email} onChange={e => setInv({ ...inv, email: e.target.value })} /></Campo>
+          <Campo label="Rol"><select className="select" value={inv.rol} onChange={e => setInv({ ...inv, rol: e.target.value })}><option value="secretaria">Secretaria</option><option value="dueno">Dueño</option></select></Campo>
         </div>
-        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={agregarUsuario}>Crear usuario</button>
+        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={invitar}>Invitar</button>
+        <div className="muted" style={{ marginTop: 8 }}>La persona se registra en esta misma página con ese correo y queda dentro de tu empresa.</div>
+        <div className="label" style={{ marginTop: 16 }}>Cambiar mi clave</div>
+        <div className="row">
+          <div style={{ width: 220 }}><input className="input" type="password" value={clave} onChange={e => setClave(e.target.value)} autoComplete="new-password" placeholder="Clave nueva" /></div>
+          <button className="btn btn-ghost" onClick={cambiarClave}>Guardar clave</button>
+        </div>
       </div>
 
       <div className="card">
-        <div className="h2">Respaldo de datos</div>
-        <div className="muted" style={{ marginBottom: 10 }}>Por ahora los datos se guardan en este navegador. Descarga un respaldo con frecuencia.</div>
+        <div className="h2">Importar y respaldar</div>
+        <div className="muted" style={{ marginBottom: 10 }}>Los datos se guardan en la nube y se ven desde cualquier equipo. Puedes descargar un respaldo cuando quieras.</div>
         <div className="row">
           <button className="btn btn-ghost" onClick={exportar}>⬇️ Descargar respaldo</button>
-          <button className="btn btn-ghost" onClick={() => archivo.current.click()}>⬆️ Restaurar respaldo</button>
-          <input ref={archivo} type="file" accept="application/json" hidden onChange={importar} />
+          <button className="btn btn-ghost" onClick={() => archivo.current.click()}>⬆️ Importar respaldo</button>
+          <input ref={archivo} type="file" accept="application/json" hidden onChange={leerArchivo} />
+          {haylocal && <button className="btn btn-primary" onClick={() => leerDatosDelNavegador().then(d => d && importar(d, "guardadas en este navegador"))}>Importar datos de la versión anterior</button>}
+          {!st.propiedades.length && <button className="btn btn-ghost" onClick={() => importar({ propiedades: datosEjemplo(sinHora(new Date())) }, "de ejemplo")}>Cargar datos de ejemplo</button>}
         </div>
       </div>
     </div>
@@ -2121,36 +2368,115 @@ const VISTAS = [
   { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloDueno: true },
   { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloDueno: true },
 ];
+const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "pagos", "documentos", "interesados", "miembros"];
+
+function Cargando({ texto = "Cargando…", error, onReintentar }) {
+  return (
+    <PantallaCentrada>
+      {error ? <>
+        <div style={{ color: "#B91C1C", margin: "12px 0" }}>{error}</div>
+        <div className="row"><button className="btn btn-primary" onClick={onReintentar}>Reintentar</button><button className="btn btn-ghost" onClick={() => sb.auth.signOut()}>Cerrar sesión</button></div>
+      </> : <div className="muted" style={{ marginTop: 8 }}>{texto}</div>}
+    </PantallaCentrada>
+  );
+}
 
 function App() {
+  const [sesionSb, setSesionSb] = useState(undefined); // undefined: verificando · null: sin sesión
+  const [recuperando, setRecuperando] = useState(false);
+  const [empresas, setEmpresas] = useState(null);
+  const [esAdmin, setEsAdmin] = useState(false);
+  const [empresaId, setEmpresaId] = useState(null);
   const [st, setSt] = useState(null);
-  const [cargado, setCargado] = useState(false);
-  const [userId, setUserId] = useState(sesion.get());
+  const [error, setError] = useState("");
+  const [intento, setIntento] = useState(0);
   const [vista, setVista] = useState("panel");
   const [ficha, setFicha] = useState(null);
   const [toastMsg, setToastMsg] = useState("");
   const [hoy, setHoy] = useState(() => sinHora(new Date()));
   const [menu, setMenu] = useState(false);
+  const [guardando, setGuardando] = useState(0);
   const stRef = useRef(null); stRef.current = st;
+  const cola = useRef(Promise.resolve());
+  const pendientes = useRef(0);
+  const temporizador = useRef(null);
+
+  const toast = useCallback(m => { setToastMsg(m); clearTimeout(window.__tt); window.__tt = setTimeout(() => setToastMsg(""), 3800); }, []);
 
   useEffect(() => {
-    Store.load().then(s => { setSt(s); setCargado(true); });
-    if (canal) canal.onmessage = () => Store.load().then(setSt);
+    sb.auth.getSession().then(({ data }) => setSesionSb(data.session));
+    const { data } = sb.auth.onAuthStateChange((evento, s) => { setSesionSb(s); if (evento === "PASSWORD_RECOVERY") setRecuperando(true); });
     const t = setInterval(() => { const d = sinHora(new Date()); setHoy(h => h.getTime() === d.getTime() ? h : d); }, 60000);
-    return () => clearInterval(t);
+    return () => { data.subscription.unsubscribe(); clearInterval(t); };
   }, []);
 
-  const toast = useCallback(m => { setToastMsg(m); clearTimeout(window.__tt); window.__tt = setTimeout(() => setToastMsg(""), 3200); }, []);
-  const user = st && st.usuarios.find(u => u.id === userId && u.activo !== false);
+  const uidSesion = sesionSb ? sesionSb.user.id : null;
 
-  const guardar = useCallback(n => { setSt(n); Store.save(n).then(() => canal && canal.postMessage("u")); }, []);
+  // Al iniciar sesión: aceptar invitaciones pendientes y listar las empresas del usuario
+  const cargarEmpresas = useCallback(async () => {
+    setError("");
+    await q(sb.rpc("aceptar_invitaciones"));
+    const [ms, adm] = await Promise.all([
+      q(sb.from("miembros").select("empresa_id, rol, activo, empresas(nombre)").eq("user_id", uidSesion)),
+      q(sb.from("admins_plataforma").select("rol").eq("user_id", uidSesion).maybeSingle()),
+    ]);
+    const activas = ms.filter(m => m.activo);
+    setEsAdmin(!!adm); setEmpresas(activas);
+    const guardada = local.get("alma-empresa");
+    const elegida = activas.find(m => m.empresa_id === guardada) || (activas.length === 1 ? activas[0] : null);
+    setEmpresaId(elegida ? elegida.empresa_id : null);
+  }, [uidSesion]);
+
+  useEffect(() => {
+    setEmpresas(null); setEmpresaId(null); setSt(null);
+    if (uidSesion) cargarEmpresas().catch(e => setError(mensajeError(e)));
+  }, [uidSesion, intento]);
+
+  const recargar = useCallback(async () => {
+    if (!empresaId) return;
+    try { const n = await cargarEmpresa(empresaId); stRef.current = n; setSt(n); setError(""); }
+    catch (e) { if (!stRef.current) setError(mensajeError(e)); else toast(mensajeError(e)); }
+  }, [empresaId, toast]);
+
+  // Recarga cuando otro usuario cambia algo (espera a que terminen los guardados propios)
+  const programarRecarga = useCallback(() => {
+    clearTimeout(temporizador.current);
+    temporizador.current = setTimeout(() => { if (pendientes.current) programarRecarga(); else recargar(); }, 700);
+  }, [recargar]);
+
+  useEffect(() => {
+    if (!empresaId) return;
+    local.set("alma-empresa", empresaId);
+    setSt(null); recargar();
+    const canalVivo = sb.channel("empresa-" + empresaId);
+    TABLAS_EN_VIVO.forEach(t => canalVivo.on("postgres_changes", { event: "*", schema: "public", table: t, filter: `empresa_id=eq.${empresaId}` }, programarRecarga));
+    canalVivo.on("postgres_changes", { event: "*", schema: "public", table: "empresas", filter: `id=eq.${empresaId}` }, programarRecarga);
+    canalVivo.subscribe();
+    return () => { sb.removeChannel(canalVivo); };
+  }, [empresaId]);
+
+  const user = st && uidSesion && (() => {
+    const m = st.usuarios.find(u => u.id === uidSesion && u.activo !== false);
+    return m ? { ...m, email: sesionSb.user.email } : null;
+  })();
+
+  // Cambio optimista: se ve al instante y se guarda en segundo plano, en orden
   const update = useCallback((fn, accion) => {
-    const n = structuredClone(stRef.current);
+    const prev = stRef.current;
+    const n = structuredClone(prev);
     fn(n);
-    if (accion) { n.bitacora = [{ t: Date.now(), u: (n.usuarios.find(x => x.id === userId) || {}).nombre || "—", a: accion }, ...(n.bitacora || [])].slice(0, 1000); }
-    stRef.current = n;
-    guardar(n);
-  }, [guardar, userId]);
+    if (accion) n.bitacora = [{ t: Date.now(), u: user ? user.nombre : "—", a: accion }, ...(n.bitacora || [])].slice(0, 1000);
+    stRef.current = n; setSt(n);
+    if (JSON.stringify(n.uf) !== JSON.stringify(prev.uf)) local.set("alma-uf", n.uf);
+    pendientes.current++; setGuardando(g => g + 1);
+    cola.current = cola.current
+      .then(async () => {
+        await sincronizar(prev, n, empresaId);
+        if (accion) await q(sb.from("bitacora").insert({ empresa_id: empresaId, user_id: uidSesion, usuario: user ? user.nombre : null, accion }));
+      })
+      .catch(e => { toast("No se guardó: " + mensajeError(e)); recargar(); })
+      .finally(() => { pendientes.current--; setGuardando(g => g - 1); });
+  }, [empresaId, uidSesion, user && user.nombre, toast, recargar]);
 
   const recargarUF = useCallback(async () => {
     try { const r = await obtenerUF(); update(s => { s.uf = { valor: r.valor, fecha: r.fecha, auto: true }; }); toast(`UF actualizada: ${fmtCLP(r.valor)}`); }
@@ -2162,20 +2488,20 @@ function App() {
     if (st && user && st.uf.auto !== false && st.uf.fecha !== toISO(hoy)) obtenerUF().then(r => update(s => { s.uf = { valor: r.valor, fecha: toISO(hoy), auto: true }; })).catch(() => {});
   }, [!!user, hoy]);
 
-  if (!cargado) return null;
-  if (!user) {
-    return <><style>{css}</style><Acceso st={st}
-      onEntrar={u => { sesion.set(u.id); setUserId(u.id); }}
-      onCrear={(u, ejemplo) => {
-        const n = st && st.usuarios ? structuredClone(st) : estadoInicial(ejemplo, sinHora(new Date()));
-        n.usuarios.push(u);
-        n.bitacora.unshift({ t: Date.now(), u: u.nombre, a: "Creó la cuenta del dueño" });
-        guardar(n); sesion.set(u.id); setUserId(u.id);
-      }} /></>;
-  }
+  const salir = () => { setVista("panel"); setFicha(null); sb.auth.signOut(); };
+
+  if (recuperando && sesionSb) return <><style>{css}</style><NuevaClave onListo={() => { setRecuperando(false); toast("Clave actualizada"); }} /></>;
+  if (sesionSb === undefined) return <><style>{css}</style><Cargando /></>;
+  if (!sesionSb) return <><style>{css}</style><Acceso /></>;
+  if (error && !st) return <><style>{css}</style><Cargando error={error} onReintentar={() => setIntento(i => i + 1)} /></>;
+  if (!empresas) return <><style>{css}</style><Cargando /></>;
+  if (!empresaId) return <><style>{css}</style><Bienvenida sesionSb={sesionSb} empresas={empresas} esAdmin={esAdmin}
+    onElegir={setEmpresaId} onCreada={id => { local.set("alma-empresa", id); setIntento(i => i + 1); }} /></>;
+  if (!st) return <><style>{css}</style><Cargando texto="Cargando propiedades…" /></>;
+  if (!user) return <><style>{css}</style><Cargando error="Tu usuario está desactivado en esta empresa." onReintentar={() => setIntento(i => i + 1)} /></>;
 
   const ctx = {
-    st, update, user, hoy, uf: Number(st.uf.valor) || 0, toast, recargarUF,
+    st, update, user, hoy, uf: Number(st.uf.valor) || 0, toast, recargarUF, recargar,
     abrirFicha: (propId, unidadId = null) => setFicha({ propId, unidadId }),
     setUnidadFicha: unidadId => setFicha(f => ({ ...f, unidadId })),
     ir: v => setVista(v),
@@ -2185,6 +2511,8 @@ function App() {
   const grupos = [...new Set(vistas.map(v => v.grupo))];
   const vistaOk = vistas.some(v => v.id === vista) ? vista : "panel";
   const Vista = { panel: PanelView, mapa: MapaView, propiedades: PropiedadesView, cobranza: CobranzaView, disponibles: DisponiblesView, contratos: ContratosView, bitacora: BitacoraView, config: ConfigView }[vistaOk];
+  const sus = st.suscripcion;
+  const bloqueada = sus && ["suspendida", "cancelada"].includes(sus.estado);
 
   return (
     <Ctx.Provider value={ctx}>
@@ -2207,8 +2535,9 @@ function App() {
           ))}
           <div style={{ marginTop: "auto", padding: "12px 8px 0", borderTop: "1px solid rgba(255,255,255,.08)" }}>
             <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{user.nombre}</div>
-            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{user.rol === "dueno" ? "Dueño" : "Secretaria"}</div>
-            <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { sesion.set(null); setUserId(null); setVista("panel"); setFicha(null); }}>↩ Cerrar sesión</button>
+            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{user.rol === "dueno" ? "Dueño" : "Secretaria"}{esAdmin ? " · admin HM" : ""}</div>
+            {empresas.length > 1 && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("alma-empresa", null); setFicha(null); setEmpresaId(null); }}>⇄ Cambiar empresa</button>}
+            <button className="nav-item" style={{ paddingLeft: 0 }} onClick={salir}>↩ Cerrar sesión</button>
           </div>
         </aside>
         <div className="main">
@@ -2218,10 +2547,18 @@ function App() {
               <span style={{ fontWeight: 700 }}>{VISTAS.find(v => v.id === vistaOk)?.label}</span>
             </div>
             <div className="row">
+              {guardando > 0 && <span className="muted">Guardando…</span>}
               <span className="tag hide-sm" style={{ background: C.blueDim, color: C.blue }}>UF {fmtCLP(ctx.uf)}</span>
               {atrasados > 0 && <button className="tag" style={{ background: EST.atrasado.bg, color: EST.atrasado.color, border: "none", cursor: "pointer" }} onClick={() => setVista("cobranza")}>⚠️ {atrasados} atrasado{atrasados > 1 ? "s" : ""}</button>}
             </div>
           </div>
+          {sus && sus.estado !== "activa" && (
+            <div style={{ padding: "8px 24px", fontSize: 12.5, background: bloqueada ? EST.atrasado.bg : sus.estado === "morosa" ? C.warningBg : C.infoBg, color: bloqueada ? "#B91C1C" : sus.estado === "morosa" ? C.warning : C.info, borderBottom: `1px solid ${C.border}` }}>
+              {bloqueada ? "Suscripción suspendida: puedes ver tus datos, pero no modificarlos. Contacta a HM Software para reactivarla."
+                : sus.estado === "morosa" ? "Tu suscripción tiene un pago pendiente. Regulariza para evitar la suspensión."
+                : `Período de prueba${sus.pruebaHasta ? " hasta el " + fmtFecha(sus.pruebaHasta) : ""} · plan ${sus.plan}.`}
+            </div>
+          )}
           <div className="content"><Vista /></div>
         </div>
       </div>

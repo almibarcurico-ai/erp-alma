@@ -1,4 +1,6 @@
--- Optimización de políticas (advisors de rendimiento de Supabase). Pendiente de aplicar.
+-- Optimización de políticas (advisors de rendimiento de Supabase). PENDIENTE de aplicar:
+-- contiene DROP POLICY, que el conector de Supabase no ejecuta sin confirmación;
+-- aplicarlo desde el editor SQL del panel de Supabase.
 
 -- ─── Políticas: sin superposiciones, solo para usuarios autenticados ─────────
 drop policy planes_lectura on public.planes;
