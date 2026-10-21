@@ -226,7 +226,20 @@ const aCLP = (n, moneda, uf) => moneda === "CLP" ? Number(n) || 0 : (Number(n) |
 // IVA opcional sobre la renta (p. ej. locales comerciales). Las multas no llevan IVA.
 const TASA_IVA = 0.19;
 const conIVA = c => c && c.iva ? 1 + TASA_IVA : 1;
-const fmtRenta = c => fmtMonto(c.valor, c.moneda) + (c.iva ? " + IVA" : "");
+// Reajuste opcional: la renta sube un % cada N meses, contados desde el mes de inicio del contrato
+const reajusteActivo = c => !!(c && c.reajuste && Number(c.reajuste.pct) > 0 && Number(c.reajuste.cadaMeses) > 0);
+const mesesEntre = (a, b) => { const [y1, m1] = a.split("-").map(Number), [y2, m2] = b.split("-").map(Number); return (y2 - y1) * 12 + m2 - m1; };
+const pasosReajuste = (c, periodo) => { const ini = parseISO(c.inicio); return reajusteActivo(c) && ini ? Math.floor(Math.max(0, mesesEntre(periodoDe(ini), periodo)) / Number(c.reajuste.cadaMeses)) : 0; };
+function rentaMes(c, periodo = periodoDe(new Date())) {
+  const base = Number(c.valor) || 0, n = pasosReajuste(c, periodo);
+  if (!n) return base;
+  const v = base * Math.pow(1 + Number(c.reajuste.pct) / 100, n);
+  return c.moneda === "CLP" ? Math.round(v) : Math.round(v * 100) / 100;
+}
+// Próximo mes en que sube la renta
+const proximoReajuste = (c, periodo = periodoDe(new Date())) => { const ini = parseISO(c.inicio); return reajusteActivo(c) && ini ? sumarMes(periodoDe(ini), (pasosReajuste(c, periodo) + 1) * Number(c.reajuste.cadaMeses)) : null; };
+const descripcionReajuste = c => reajusteActivo(c) ? `${String(c.reajuste.pct).replace(".", ",")}% cada ${c.reajuste.cadaMeses} ${Number(c.reajuste.cadaMeses) === 1 ? "mes" : "meses"}` : "";
+const fmtRenta = (c, periodo) => fmtMonto(rentaMes(c, periodo), c.moneda) + (c.iva ? " + IVA" : "");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const telWA = t => { let d = String(t || "").replace(/\D/g, ""); if (d.length === 9 && d[0] === "9") d = "56" + d; if (d.length === 8) d = "569" + d; return d; };
 const linkWA = (tel, msg) => `https://wa.me/${telWA(tel)}?text=${encodeURIComponent(msg)}`;
@@ -317,7 +330,7 @@ function mensajeError(e) {
 
 const aContrato = (c, pagos, abonos) => ({
   id: c.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: c.termino || "", diaPago: c.dia_pago, moneda: c.moneda,
-  valor: Number(c.valor), iva: !!c.iva, garantia: c.garantia == null ? "" : Number(c.garantia), multa: c.multa,
+  valor: Number(c.valor), iva: !!c.iva, reajuste: c.reajuste || null, garantia: c.garantia == null ? "" : Number(c.garantia), multa: c.multa,
   multasCondonadas: Object.fromEntries((c.multas_condonadas || []).map(p => [p, true])),
   terminado: c.terminado,
   pagos: pagos.filter(p => p.contrato_id === c.id).map(p => ({
@@ -388,7 +401,7 @@ function filas(st, E) {
       const contratos = [...(u.historial || []).map(c => [c, false]), ...(u.contrato ? [[u.contrato, true]] : [])];
       contratos.forEach(([c, vigente]) => {
         t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
-          dia_pago: Number(c.diaPago), moneda: c.moneda, valor: num(c.valor), iva: !!c.iva, garantia: num(c.garantia), multa: c.multa || { cobrar: false },
+          dia_pago: Number(c.diaPago), moneda: c.moneda, valor: num(c.valor), iva: !!c.iva, reajuste: reajusteActivo(c) ? { pct: Number(c.reajuste.pct), cadaMeses: Number(c.reajuste.cadaMeses) } : null, garantia: num(c.garantia), multa: c.multa || { cobrar: false },
           multas_condonadas: Object.keys(c.multasCondonadas || {}).filter(k => c.multasCondonadas[k]).sort(),
           vigente, terminado: vigente ? null : n(c.terminado) });
         (c.pagos || []).forEach(pg => t.pagos.set(pg.id, { id: pg.id, empresa_id: E, contrato_id: c.id, periodo: pg.periodo, fecha: pg.fecha,
@@ -504,7 +517,7 @@ function calcMulta(c, diasAtraso, periodo) {
   if (!m.cobrar || diasAtraso <= 0) return 0;
   if ((c.multasCondonadas || {})[periodo]) return 0;
   if (diasAtraso <= (Number(m.diasGracia) || 0)) return 0;
-  const monto = Number(m.monto) || 0, valor = Number(c.valor) || 0;
+  const monto = Number(m.monto) || 0, valor = rentaMes(c, periodo);
   let x = 0;
   if (m.tipo === "diaria") x = monto * diasAtraso;
   else if (m.tipo === "diaria_pct") x = valor * monto / 100 * diasAtraso;
@@ -530,13 +543,13 @@ function descripcionMulta(c) {
 
 // Abonos: pagos parciales de un mes. Se llevan a la moneda del contrato (UF al valor del día del abono)
 // y cubren primero la renta del mes (IVA incluido) y luego la multa por atraso, si se cobra.
-const totalMes = c => (Number(c.valor) || 0) * conIVA(c);
+const totalMes = (c, periodo) => rentaMes(c, periodo) * conIVA(c);
 const abonadoMes = (c, periodo) => (c.abonos || []).filter(a => a.periodo === periodo)
   .reduce((t, a) => t + (c.moneda === "CLP" ? a.montoCLP : a.montoCLP / (Number(a.ufDia) || 1)), 0);
-const saldoMes = (c, periodo) => Math.max(0, totalMes(c) - abonadoMes(c, periodo));
+const saldoMes = (c, periodo) => Math.max(0, totalMes(c, periodo) - abonadoMes(c, periodo));
 const abonadoMesCLP = (c, periodo) => (c.abonos || []).filter(a => a.periodo === periodo).reduce((t, a) => t + a.montoCLP, 0);
 // Multa que queda por pagar después de cubrir la renta con abonos
-const multaPendiente = (c, periodo, multa) => Math.max(0, multa - Math.max(0, abonadoMes(c, periodo) - totalMes(c)));
+const multaPendiente = (c, periodo, multa) => Math.max(0, multa - Math.max(0, abonadoMes(c, periodo) - totalMes(c, periodo)));
 // Meses pagados: con un pago registrado, o cuando los abonos cubren la renta y la multa
 // calculada a la fecha del último abono (tolerancia de redondeo de 0,1%)
 function mesesPagados(c) {
@@ -544,7 +557,7 @@ function mesesPagados(c) {
   new Set((c.abonos || []).map(a => a.periodo)).forEach(p => {
     const ultimo = (c.abonos || []).filter(a => a.periodo === p).map(a => a.fecha).sort().pop();
     const multa = calcMulta(c, diffDias(parseISO(ultimo), vencimiento(p, c.diaPago)), p);
-    if (abonadoMes(c, p) >= (totalMes(c) + multa) * 0.999) set.add(p);
+    if (abonadoMes(c, p) >= (totalMes(c, p) + multa) * 0.999) set.add(p);
   });
   return set;
 }
@@ -581,7 +594,7 @@ function calcUnidad(u, hoy, uf) {
     proxVenc = vAct;
   }
   if (proxVenc && c.termino && periodoDe(proxVenc) > periodoDe(parseISO(c.termino))) proxVenc = null;
-  const canonCLP = aCLP(c.valor, c.moneda, uf) * conIVA(c);
+  const canonCLP = aCLP(rentaMes(c, actual), c.moneda, uf) * conIVA(c);
   const multa = deudas.reduce((s, d) => s + d.multa, 0);
   const deudaCLP = aCLP(deudas.reduce((t, d) => t + d.saldo, 0) + multa, c.moneda, uf);
   const diasTermino = c.termino ? diffDias(parseISO(c.termino), hoy) : null;
@@ -648,7 +661,7 @@ function mensajes(p, u, r, uf, empresa) {
   if (!c) return [];
   const a = c.arrendatario || {};
   const nom = nombreUnidad(p, u);
-  const monto = c.moneda === "UF" ? `${fmtRenta(c)} (aprox. ${fmtCLP(c.valor * uf * conIVA(c))}${c.iva ? " con IVA" : ""} a la UF de hoy)` : `${fmtRenta(c)}${c.iva ? ` (${fmtCLP(c.valor * conIVA(c))} con IVA)` : ""}`;
+  const monto = c.moneda === "UF" ? `${fmtRenta(c)} (aprox. ${fmtCLP(rentaMes(c) * uf * conIVA(c))}${c.iva ? " con IVA" : ""} a la UF de hoy)` : `${fmtRenta(c)}${c.iva ? ` (${fmtCLP(rentaMes(c) * conIVA(c))} con IVA)` : ""}`;
   const firma = `\n\nSaludos cordiales,\n${empresa.nombre}${empresa.telefono ? "\n" + empresa.telefono : ""}`;
   const out = [
     { id: "recordatorio", titulo: "Recordatorio de pago",
@@ -656,7 +669,7 @@ function mensajes(p, u, r, uf, empresa) {
       texto: `Estimado/a ${a.nombre || ""}:\n\nLe recordamos que el arriendo de ${nom} (${p.direccion}) por ${monto} vence el ${fmtFecha(r.proxVenc || vencimiento(periodoDe(new Date()), c.diaPago))}.\n\nPuede transferir a la cuenta habitual y enviarnos el comprobante por este medio.${firma}` },
   ];
   if (r.deudas.length) {
-    const det = r.deudas.map(d => `• ${nombrePeriodo(d.periodo)}: ${d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c)}${d.multa ? ` + multa ${fmtMonto(d.multa, c.moneda)} (${d.dias} días de atraso)` : ` (${d.dias} días de atraso)`}`).join("\n");
+    const det = r.deudas.map(d => `• ${nombrePeriodo(d.periodo)}: ${d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c, d.periodo)}${d.multa ? ` + multa ${fmtMonto(d.multa, c.moneda)} (${d.dias} días de atraso)` : ` (${d.dias} días de atraso)`}`).join("\n");
     out.push({ id: "atraso", titulo: "Aviso de atraso",
       asunto: `Arriendo atrasado - ${nom}`,
       texto: `Estimado/a ${a.nombre || ""}:\n\nA la fecha registramos el siguiente saldo pendiente por el arriendo de ${nom}:\n\n${det}\n\nTotal adeudado: ${fmtCLP(r.deudaCLP)} (UF a ${fmtCLP(uf)}).\n\nLe solicitamos regularizar a la brevedad. Si ya realizó el pago, por favor envíenos el comprobante.${firma}` });
@@ -723,7 +736,7 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
 <p><b>PRIMERO: Inmueble.</b> El Arrendador da en arrendamiento al Arrendatario, quien acepta para sí, el inmueble ubicado en ${inmueble}${u.m2 ? `, de una superficie aproximada de ${h(u.m2)} m²` : ""}.</p>
 <p><b>SEGUNDO: Destino.</b> ${destino}</p>
 <p><b>TERCERO: Plazo.</b> El presente contrato rige desde el ${c.inicio ? fmtFechaLarga(c.inicio) : "___"} hasta el ${c.termino ? fmtFechaLarga(c.termino) : "___"}. Se renovará tácita y sucesivamente por períodos de un año si ninguna de las partes comunica a la otra su voluntad de no renovarlo, mediante carta certificada enviada con al menos 60 días de anticipación al vencimiento.</p>
-<p><b>CUARTO: Renta.</b> La renta mensual será de ${renta}${c.moneda === "UF" ? ", pagadera en su equivalente en pesos según el valor de la UF del día del pago efectivo" : ", reajustable anualmente según la variación del IPC"}. Se pagará por mes anticipado, a más tardar el día ${h(c.diaPago || "5")} de cada mes, mediante transferencia o depósito en la cuenta que indique el Arrendador.</p>
+<p><b>CUARTO: Renta.</b> La renta mensual será de ${renta}${c.moneda === "UF" ? ", pagadera en su equivalente en pesos según el valor de la UF del día del pago efectivo" : ""}${reajusteActivo(c) ? `, y se reajustará en un ${h(descripcionReajuste(c))}, contados desde el inicio del contrato` : c.moneda === "UF" ? "" : ", reajustable anualmente según la variación del IPC"}. Se pagará por mes anticipado, a más tardar el día ${h(c.diaPago || "5")} de cada mes, mediante transferencia o depósito en la cuenta que indique el Arrendador.</p>
 <p><b>QUINTO: Multa por atraso.</b> ${multaTxt}</p>
 <p><b>SEXTO: Garantía.</b> El Arrendatario entrega en este acto la suma equivalente a ${c.garantia ? (c.moneda === "CLP" ? fmtCLP(c.garantia) : String(c.garantia).replace(".", ",") + " UF") : "___"} a título de garantía, para asegurar la restitución del inmueble en el estado en que lo recibe y el pago de rentas, consumos y eventuales daños. Será devuelta dentro de los 30 días siguientes a la restitución, debidamente reajustada, deducidos los montos que correspondan.</p>
 <p><b>SÉPTIMO: Gastos y servicios.</b> Serán de cargo del Arrendatario los consumos de luz, agua, gas, gastos comunes y demás servicios, debiendo exhibir los comprobantes de pago cuando el Arrendador lo solicite.</p>
@@ -767,7 +780,7 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
 <p>Sin otro particular, saluda atentamente,</p><p><br/>______________________<br/>${h(arr.nombre)}<br/>Arrendador</p>`;
     case "cobranza": {
       const r = calcUnidad(u, hoy, uf);
-      const filas = r.deudas.map(d => `<tr><td>${nombrePeriodo(d.periodo)}</td><td>${d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c)}</td><td>${d.dias} días</td><td>${d.multa ? fmtMonto(d.multa, c.moneda) : "—"}</td></tr>`).join("");
+      const filas = r.deudas.map(d => `<tr><td>${nombrePeriodo(d.periodo)}</td><td>${d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c, d.periodo)}</td><td>${d.dias} días</td><td>${d.multa ? fmtMonto(d.multa, c.moneda) : "—"}</td></tr>`).join("");
       return `<p style="text-align:right">${ciudad}, ${fecha}</p><p>Señor(a)<br/><b>${h(a.nombre || "___")}</b><br/>Presente</p>
 <p><b>Ref.: Cobranza de rentas de arrendamiento impagas.</b></p>
 <p>De mi consideración:</p><p>Por medio de la presente le informo que, a la fecha, registra rentas impagas por el arrendamiento del inmueble ubicado en ${inmueble}, según el siguiente detalle:</p>
@@ -916,7 +929,7 @@ function tooltipHTML(p, cp, uf) {
       // Suma en UF solo si todos los locales ocupados arriendan en UF; si hay alguno en pesos, solo el total en pesos
       const cs = cp.us.filter(x => x.u.contrato).map(x => x.u.contrato);
       const todoUF = cs.every(c => c.moneda !== "CLP" && !c.iva);
-      const totalUF = cs.reduce((t, c) => t + (Number(c.valor) || 0), 0);
+      const totalUF = cs.reduce((t, c) => t + rentaMes(c), 0);
       h += `<div class="r"><span>Renta mensual</span><span>${todoUF ? fmtUF(totalUF) + " · " : ""}${fmtCLP(cp.canonCLP)}</span></div>`;
     }
   } else {
@@ -924,7 +937,7 @@ function tooltipHTML(p, cp, uf) {
     if (u && u.contrato) {
       const c = u.contrato;
       h += `<div class="r"><span>Arrendatario</span><span>${esc(c.arrendatario?.nombre || "—")}</span></div>`;
-      h += `<div class="r"><span>Renta mensual</span><span>${c.moneda === "CLP" ? "" : fmtUF(c.valor) + (c.iva ? " + IVA" : "") + " · "}${fmtCLP(r.canonCLP)}</span></div>`;
+      h += `<div class="r"><span>Renta mensual</span><span>${c.moneda === "CLP" ? "" : fmtUF(rentaMes(c)) + (c.iva ? " + IVA" : "") + " · "}${fmtCLP(r.canonCLP)}</span></div>`;
       h += `<div class="r"><span>Día de pago</span><span>${c.diaPago} de cada mes</span></div>`;
       if (r.proxVenc) h += `<div class="r"><span>Próximo venc.</span><span>${fmtFecha(r.proxVenc)}</span></div>`;
     } else if (u) {
@@ -1394,7 +1407,7 @@ function PropiedadesView() {
 const contratoVacio = () => ({
   id: uid(), arrendatario: { nombre: "", rut: "", email: "", telefono: "", giro: "", domicilio: "", representante: "" },
   inicio: toISO(new Date()), termino: toISO(new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate() - 1)),
-  diaPago: 5, moneda: "UF", valor: "", iva: false, garantia: "",
+  diaPago: 5, moneda: "UF", valor: "", iva: false, reajuste: null, garantia: "",
   multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
   pagos: [], multasCondonadas: {},
 });
@@ -1579,6 +1592,12 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
             <Campo label={`Garantía (${unidadMoneda})`}><input className="input" type="number" step="0.01" value={c.garantia} onChange={e => updC("garantia", e.target.value)} /></Campo>
             <Campo label="IVA">
               <label className="switch" style={{ marginTop: 9 }}><input type="checkbox" checked={!!c.iva} onChange={e => updC("iva", e.target.checked)} />Cobrar más IVA (19%)</label>
+            </Campo>
+            <Campo label="Reajuste (%)"><input className="input" type="number" step="0.01" min="0" placeholder="Sin reajuste" value={c.reajuste?.pct ?? ""} onChange={e => updC("reajuste", { cadaMeses: 12, ...(c.reajuste || {}), pct: e.target.value })} /></Campo>
+            <Campo label="Reajustar cada (meses)">
+              <select className="select" value={c.reajuste?.cadaMeses ?? 12} onChange={e => updC("reajuste", { pct: "", ...(c.reajuste || {}), cadaMeses: Number(e.target.value) })}>
+                {[1, 3, 6, 12, 24].map(n => <option key={n} value={n}>{n === 1 ? "Cada mes" : `Cada ${n} meses`}</option>)}
+              </select>
             </Campo>
           </div>
           <div className="card" style={{ marginTop: 14, background: c.multa.cobrar ? C.warningBg : C.bg, padding: 14 }}>
@@ -1807,7 +1826,7 @@ function PagoModal({ p, u, onClose, modoInicial = "pago" }) {
       </div>
       <div className="card" style={{ marginTop: 14, background: C.bg, padding: 14 }}>
         <dl className="kv">
-          <dt>Renta</dt><dd>{fmtRenta(c)} = {fmtCLP(Math.round(aCLP(totalMes(c), c.moneda, Number(f.ufDia))))}{c.iva ? <span className="muted"> (con IVA)</span> : null}</dd>
+          <dt>Renta</dt><dd>{fmtRenta(c, f.periodo)} = {fmtCLP(Math.round(aCLP(totalMes(c, f.periodo), c.moneda, Number(f.ufDia))))}{c.iva ? <span className="muted"> (con IVA)</span> : null}</dd>
           {abonadoCLP > 0 && <><dt>Abonado</dt><dd>{fmtCLP(abonadoCLP)} en {(c.abonos || []).filter(a => a.periodo === f.periodo).length} abono(s)</dd></>}
           {abonadoCLP > 0 && <><dt>Saldo de la renta</dt><dd style={{ fontWeight: 700 }}>{fmtCLP(montoCLP)}</dd></>}
           <dt>Vencimiento</dt><dd>{fmtFecha(vencimiento(f.periodo, c.diaPago))} {diasAtraso > 0 ? <span style={{ color: "#DC2626" }}>· {diasAtraso} días de atraso</span> : ""}</dd>
@@ -2074,6 +2093,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                     <div className="muted">Renta mensual</div>
                     <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtRenta(c)}</div>
                     {c.moneda === "UF" && <div className="muted">≈ {fmtCLP(r.canonCLP)} (UF {fmtCLP(uf)})</div>}
+                    {reajusteActivo(c) && <div className="muted">Reajuste {descripcionReajuste(c)} · base {fmtMonto(c.valor, c.moneda)} · sube en {nombrePeriodo(proximoReajuste(c))}</div>}
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <Badge estado={r.estado} />
@@ -2164,7 +2184,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                   <b style={{ color: "#B91C1C" }}>Pendiente: {fmtCLP(r.deudaCLP)}</b>
                   <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "comunicar", plantilla: "atraso" })}>Enviar aviso de atraso</button>
                 </div>
-                {r.deudas.map(d => <div key={d.periodo} className="muted" style={{ marginTop: 4 }}>{nombrePeriodo(d.periodo)}: {d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c)} · venció {fmtFecha(d.venc)} ({d.dias} días){d.multa ? ` · multa ${fmtMonto(d.multa, c.moneda)}` : ""}</div>)}
+                {r.deudas.map(d => <div key={d.periodo} className="muted" style={{ marginTop: 4 }}>{nombrePeriodo(d.periodo)}: {d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c, d.periodo)} · venció {fmtFecha(d.venc)} ({d.dias} días){d.multa ? ` · multa ${fmtMonto(d.multa, c.moneda)}` : ""}</div>)}
               </div>
             )}
             {puede(user, "pagos") && <div className="row">

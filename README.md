@@ -25,5 +25,10 @@ Proyecto Supabase `qipo-arriendos`. Las migraciones están en `supabase/migratio
 | `20261020010000_funciones_privadas.sql` | aplicada |
 | `20261020020000_optimizar_politicas.sql` | **pendiente**: aplicar desde el editor SQL de Supabase |
 | `20261020030000_registro_e_invitaciones.sql` | aplicada |
+| `20261021000000_servicios_unidades.sql` | aplicada |
+| `20261021010000_iva_opcional.sql` | aplicada |
+| `20261021020000_inventario_unidades.sql` | aplicada |
+| `20261021030000_abonos.sql` | aplicada |
+| `20261021040000_reajuste.sql` | aplicada |
 
 Los administradores de plataforma (Torre de Control HM) se cargan en `privado.admins_invitados` directamente en la base y quedan activos al registrarse con ese correo. La vista `torre_empresas` resume cada empresa cliente (plan, estado, unidades, ingreso mensual en UF).
