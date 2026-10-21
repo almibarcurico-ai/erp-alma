@@ -244,6 +244,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const telWA = t => { let d = String(t || "").replace(/\D/g, ""); if (d.length === 9 && d[0] === "9") d = "56" + d; if (d.length === 8) d = "569" + d; return d; };
 const linkWA = (tel, msg) => `https://wa.me/${telWA(tel)}?text=${encodeURIComponent(msg)}`;
 const linkMail = (to, asunto, cuerpo) => `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(asunto)}&body=${encodeURIComponent(cuerpo)}`;
+const OPERACIONES = { arriendo: "Arriendo", venta: "Venta", ambas: "Arriendo y venta" };
 const CATEGORIAS = { casa:"Casa", depto:"Departamento", oficina:"Oficina", local:"Local comercial", bodega:"Bodega", terreno:"Terreno", otro:"Otro" };
 const ICONO = { casa:"🏠", depto:"🏢", oficina:"💼", local:"🏬", bodega:"📦", terreno:"🌳", otro:"📍", centro:"🛍️" };
 
@@ -343,6 +344,7 @@ function mensajeError(e) {
   if (/Email not confirmed/i.test(m)) return "Confirma tu correo con el enlace que te enviamos antes de ingresar.";
   if (/User already registered/i.test(m)) return "Ese correo ya tiene cuenta. Ingresa con tu clave.";
   if (/Email address .* is invalid/i.test(m)) return "El servidor de correo no aceptó esa dirección. Revisa que esté bien escrita; si lo está, el administrador debe configurar el envío de correos en Supabase.";
+  if (/empresas_slug_key/i.test(m)) return "Esa dirección web ya la usa otra inmobiliaria. Elige otra.";
   if (/Failed to fetch|NetworkError/i.test(m)) return "Sin conexión con el servidor. Revisa tu internet.";
   return m;
 }
@@ -387,7 +389,7 @@ async function cargarEmpresa(E) {
   const plan = sus && sus.planes;
   const propDeUnidad = Object.fromEntries(unis.map(u => [u.id, u.propiedad_id]));
   return {
-    empresa: { id: emp.id, nombre: emp.nombre, rut: vacio(emp.rut), direccion: vacio(emp.direccion), email: vacio(emp.email), telefono: vacio(emp.telefono), representante: vacio(emp.representante), rutRep: vacio(emp.rut_rep) },
+    empresa: { id: emp.id, nombre: emp.nombre, rut: vacio(emp.rut), direccion: vacio(emp.direccion), email: vacio(emp.email), telefono: vacio(emp.telefono), representante: vacio(emp.representante), rutRep: vacio(emp.rut_rep), slug: emp.slug || "", web: emp.web || {} },
     suscripcion: sus ? { planId: sus.plan_id, plan: plan && plan.nombre, maxUnidades: plan && plan.max_unidades, maxUsuarios: plan && plan.max_usuarios,
       funciones: (plan && plan.funciones) || [], precioCLP: sus.precio_clp_pactado ?? (plan && plan.precio_clp), ciclo: sus.ciclo || "mensual",
       estado: sus.estado, pruebaHasta: sus.prueba_hasta, vigenteHasta: sus.vigente_hasta } : null,
@@ -410,6 +412,7 @@ async function cargarEmpresa(E) {
         return {
           id: u.id, nombre: u.nombre, categoria: u.categoria, m2: vacio(u.m2), dormitorios: vacio(u.dormitorios), banos: vacio(u.banos),
           estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [],
+          publicar: u.publicar !== false, operacion: u.operacion || "arriendo", precioVentaUF: vacio(u.precio_venta_uf),
           contrato: vig ? aContrato(vig, pags, abns) : null,
           historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags, abns)),
         };
@@ -425,7 +428,7 @@ async function cargarEmpresa(E) {
 function filas(st, E) {
   const t = { empresas: new Map(), propietarios: new Map(), propietarios_banco: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), abonos: new Map(), documentos: new Map(), interesados: new Map() };
   const e = st.empresa, n = v => v === "" || v == null ? null : v;
-  t.empresas.set(e.id, { id: e.id, nombre: e.nombre, rut: n(e.rut), direccion: n(e.direccion), email: n(e.email), telefono: n(e.telefono), representante: n(e.representante), rut_rep: n(e.rutRep) });
+  t.empresas.set(e.id, { id: e.id, nombre: e.nombre, rut: n(e.rut), direccion: n(e.direccion), email: n(e.email), telefono: n(e.telefono), representante: n(e.representante), rut_rep: n(e.rutRep), slug: n(e.slug), web: e.web || {} });
   (st.propietarios || []).forEach(pr => {
     t.propietarios.set(pr.id, { id: pr.id, empresa_id: E, nombre: pr.nombre, rut: n(pr.rut), email: n(pr.email), telefono: n(pr.telefono), domicilio: n(pr.domicilio),
       representante: n(pr.representante), rut_rep: n(pr.rutRep), comision_pct: Number(pr.comisionPct) || 0, comision_iva: pr.comisionIva !== false, notas: n(pr.notas) });
@@ -437,7 +440,8 @@ function filas(st, E) {
       lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {}, propietario_id: n(p.propietarioId) });
     p.unidades.forEach((u, i) => {
       t.unidades.set(u.id, { id: u.id, empresa_id: E, propiedad_id: p.id, nombre: u.nombre, categoria: u.categoria || "otro", m2: num(u.m2), dormitorios: num(u.dormitorios),
-        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [], orden: i });
+        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [], orden: i,
+        publicar: u.publicar !== false, operacion: u.operacion || "arriendo", precio_venta_uf: num(u.precioVentaUF) });
       const contratos = [...(u.historial || []).map(c => [c, false]), ...(u.contrato ? [[u.contrato, true]] : [])];
       contratos.forEach(([c, vigente]) => {
         t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
@@ -1463,7 +1467,7 @@ const contratoVacio = () => ({
   multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
   pagos: [], multasCondonadas: {},
 });
-const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, inventario: [], contrato: null });
+const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, inventario: [], contrato: null, publicar: true, operacion: "arriendo", precioVentaUF: "" });
 
 function Fotos({ fotos, onChange, editable = true }) {
   const { st, toast } = useApp();
@@ -1605,7 +1609,14 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
         {!esLocal && <Campo label="Dormitorios"><input className="input" type="number" value={u.dormitorios} onChange={e => upd("dormitorios", e.target.value)} /></Campo>}
         <Campo label="Baños"><input className="input" type="number" value={u.banos} onChange={e => upd("banos", e.target.value)} /></Campo>
         <Campo label="Estacionamientos"><input className="input" type="number" value={u.estacionamientos} onChange={e => upd("estacionamientos", e.target.value)} /></Campo>
-        <Campo label="Precio publicado (UF)"><input className="input" type="number" step="0.01" value={u.precioUF} onChange={e => upd("precioUF", e.target.value)} /></Campo>
+        <Campo label="Se ofrece en">
+          <select className="select" value={u.operacion || "arriendo"} onChange={e => upd("operacion", e.target.value)}>
+            {Object.entries(OPERACIONES).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </Campo>
+        {(u.operacion || "arriendo") !== "venta" && <Campo label="Precio arriendo mensual (UF)"><input className="input" type="number" step="0.01" value={u.precioUF} onChange={e => upd("precioUF", e.target.value)} /></Campo>}
+        {(u.operacion || "arriendo") !== "arriendo" && <Campo label="Precio venta (UF)"><input className="input" type="number" step="0.01" value={u.precioVentaUF || ""} onChange={e => upd("precioVentaUF", e.target.value)} /></Campo>}
+        <Campo label="Página web"><label className="switch" style={{ marginTop: 9 }}><input type="checkbox" checked={u.publicar !== false} onChange={e => upd("publicar", e.target.checked)} />Publicar cuando esté desocupada</label></Campo>
         <Campo label="Descripción" span><textarea className="input" rows={2} value={u.descripcion} onChange={e => upd("descripcion", e.target.value)} placeholder="Características para enviar a interesados" /></Campo>
       </div>
       <div className="section-title">Fotos</div>
@@ -2558,7 +2569,10 @@ function DisponiblesView() {
   const puntos = usePuntos(st.propiedades, filtroFn, true);
   return (
     <div className="grid fade-up" style={{ gap: 16 }}>
-      <div><div className="h1">Propiedades desocupadas</div><div className="muted">{libres.length} unidades disponibles. Envía la ficha con fotos a cualquier interesado por WhatsApp o correo.</div></div>
+      <div className="row between">
+        <div><div className="h1">Propiedades desocupadas</div><div className="muted">{libres.length} unidades disponibles. Envía la ficha con fotos a cualquier interesado por WhatsApp o correo.</div></div>
+        {st.empresa.slug && st.empresa.web && st.empresa.web.activa && <a className="btn btn-ghost" href={urlWeb(st.empresa.slug)} target="_blank" rel="noopener">🌐 Ver página web</a>}
+      </div>
       {libres.length > 0 && <MapaBase puntos={puntos} alto={300} onSelect={id => abrirFicha(id)} />}
       {!libres.length ? <div className="card empty">🎉 Todas las unidades están arrendadas.</div> : (
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))" }}>
@@ -2970,6 +2984,48 @@ function PlanesCard() {
   );
 }
 
+// Página pública de la inmobiliaria: <origen>/web/<slug>
+const urlWeb = slug => `${location.origin}/web/${slug}`;
+const aSlug = t => String(t || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+function WebCard() {
+  const { st, update, toast } = useApp();
+  const [w, setW] = useState(() => ({ activa: false, titulo: "", descripcion: "", color: "#1A3A8A", whatsapp: "", email: "", ...st.empresa.web, slug: st.empresa.slug || aSlug(st.empresa.nombre) }));
+  const set = (k, v) => setW(x => ({ ...x, [k]: v }));
+  const guardado = st.empresa.slug && st.empresa.web && st.empresa.web.activa;
+  const libres = listarUnidades(st).filter(x => !x.u.contrato && x.u.publicar !== false).length;
+  const guardar = () => {
+    const slug = aSlug(w.slug);
+    if (slug.length < 3) return toast("La dirección debe tener al menos 3 letras o números");
+    const { slug: _, ...web } = w;
+    update(s => { s.empresa = { ...s.empresa, slug, web }; }, `${w.activa ? "Publicó" : "Actualizó"} la página web (${slug})`);
+    setW(x => ({ ...x, slug }));
+    toast(w.activa ? "Página web publicada" : "Guardado (la página está desactivada)");
+  };
+  return (
+    <div className="card">
+      <div className="row between">
+        <div className="h2">Página web de la inmobiliaria</div>
+        <label className="switch"><input type="checkbox" checked={!!w.activa} onChange={e => set("activa", e.target.checked)} />Publicada</label>
+      </div>
+      <div className="muted" style={{ marginBottom: 10 }}>Muestra al público tus propiedades desocupadas ({libres} hoy) con fotos, características, precio y filtros. Las arrendadas se ocultan solas; la dirección exacta y los datos de arrendatarios y propietarios nunca se publican. Los contactos del formulario llegan como interesados a la ficha de cada propiedad.</div>
+      <div className="form-grid">
+        <Campo label="Dirección de la página"><input className="input" value={w.slug} onChange={e => set("slug", e.target.value)} onBlur={() => set("slug", aSlug(w.slug))} placeholder="mi-inmobiliaria" /></Campo>
+        <Campo label="Título"><input className="input" value={w.titulo} onChange={e => set("titulo", e.target.value)} placeholder={st.empresa.nombre} /></Campo>
+        <Campo label="WhatsApp de contacto"><input className="input" value={w.whatsapp} onChange={e => set("whatsapp", e.target.value)} placeholder={st.empresa.telefono || "+56 9 1234 5678"} /></Campo>
+        <Campo label="Correo de contacto"><input className="input" value={w.email} onChange={e => set("email", e.target.value)} placeholder={st.empresa.email} /></Campo>
+        <Campo label="Color principal"><input className="input" type="color" style={{ height: 38, padding: 4 }} value={w.color || "#1A3A8A"} onChange={e => set("color", e.target.value)} /></Campo>
+        <Campo label="Presentación" span><textarea className="input" rows={2} value={w.descripcion} onChange={e => set("descripcion", e.target.value)} placeholder="Ej: Corredora de propiedades en Santiago desde 2010. Arriendo y venta de casas, departamentos y locales." /></Campo>
+      </div>
+      <div className="muted" style={{ marginTop: 8 }}>Dirección: <b>{urlWeb(aSlug(w.slug) || "…")}</b></div>
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="btn btn-primary" onClick={guardar}>Guardar</button>
+        {guardado && <a className="btn btn-ghost" href={urlWeb(st.empresa.slug)} target="_blank" rel="noopener">🌐 Abrir página</a>}
+        {guardado && <button className="btn btn-ghost" onClick={() => navigator.clipboard.writeText(urlWeb(st.empresa.slug)).then(() => toast("Enlace copiado"), () => toast(urlWeb(st.empresa.slug)))}>Copiar enlace</button>}
+      </div>
+    </div>
+  );
+}
+
 function ConfigView() {
   const { st, update, user, toast, recargarUF, recargar } = useApp();
   const [emp, setEmp] = useState(st.empresa);
@@ -3040,8 +3096,10 @@ function ConfigView() {
           {[["nombre", "Razón social"], ["rut", "RUT"], ["direccion", "Domicilio"], ["email", "Correo"], ["telefono", "Teléfono / WhatsApp"], ["representante", "Representante legal"], ["rutRep", "RUT representante"]].map(([k, l]) =>
             <Campo key={k} label={l}><input className="input" value={emp[k] || ""} onChange={e => setEmp({ ...emp, [k]: e.target.value })} /></Campo>)}
         </div>
-        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => { if (!emp.nombre.trim()) return toast("Falta la razón social"); update(s => { s.empresa = { ...emp }; }, "Actualizó los datos de la empresa"); toast("Guardado"); }}>Guardar</button>
+        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={() => { if (!emp.nombre.trim()) return toast("Falta la razón social"); update(s => { s.empresa = { ...emp, slug: s.empresa.slug, web: s.empresa.web }; }, "Actualizó los datos de la empresa"); toast("Guardado"); }}>Guardar</button>
       </div>
+
+      <WebCard />
 
       <div className="card">
         <div className="h2">Valor UF</div>

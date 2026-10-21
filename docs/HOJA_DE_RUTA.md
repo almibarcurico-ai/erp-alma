@@ -20,6 +20,7 @@ Estados: ✅ hecho · 🟡 parcial · ⬜ pendiente
 | Pagos del SaaS | ⬜ | tabla `cobros_suscripcion`, sin pasarela |
 | Propietarios y liquidaciones | 🟡 | ficha con datos bancarios (solo dueño), comisión % + IVA, liquidación mensual en PDF (inmutable: se paga o se anula), Excel |
 | Planes | ✅ | precios en pesos, límites de unidades y usuarios, funciones por plan validadas en la base (`privado.plan_permite`) |
+| Página web por inmobiliaria | 🟡 | `/web/<dirección>`: unidades desocupadas y publicadas, filtros (operación, tipo, ciudad, comuna, dormitorios, baños, precio, m², texto), mapa aproximado, ficha con galería, WhatsApp y formulario que crea interesados. Falta: SEO con renderizado en servidor, dominio propio |
 | Fotos | ✅ | en Supabase Storage (bucket `fotos`, carpeta por empresa) |
 
 ## Planes (precios netos, + IVA; anual = 10 meses)
@@ -46,8 +47,8 @@ Los planes se cambian en la tabla `planes` sin tocar código.
 5. **Pruebas en el repo y CI** — aislamiento entre empresas, cálculos de cobro, abonos, reajustes.
 6. **Mantenciones** — solicitudes con fotos, presupuesto, aprobación del propietario y quién asume el gasto.
 7. **CRM y agenda** — embudo kanban, actividades, visitas.
-8. **Sitio web por empresa** — buscador público, SEO, leads al CRM. Aquí conviene pasar a Next.js
-   (renderizado en servidor), construyendo la app nueva en paralelo sobre el mismo Supabase.
+8. **Sitio web: SEO y dominio propio** — renderizado en servidor (Next.js) para que Google indexe cada
+   propiedad, sitemap, y dominio propio de cada inmobiliaria.
 9. **Cobro del SaaS** — integrar Flow / Mercado Pago / Transbank tras verificar condiciones; webhooks idempotentes.
 10. **Corretaje de venta y comisiones repartidas**, automatizaciones, portales externos (solo vías autorizadas).
 
