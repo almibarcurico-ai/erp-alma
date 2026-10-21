@@ -356,7 +356,7 @@ async function cargarEmpresa(E) {
         const vig = cons.find(c => c.unidad_id === u.id && c.vigente);
         return {
           id: u.id, nombre: u.nombre, categoria: u.categoria, m2: vacio(u.m2), dormitorios: vacio(u.dormitorios), banos: vacio(u.banos),
-          estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [], servicios: u.servicios || {},
+          estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [],
           contrato: vig ? aContrato(vig, pags) : null,
           historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags)),
         };
@@ -378,7 +378,7 @@ function filas(st, E) {
       lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {} });
     p.unidades.forEach((u, i) => {
       t.unidades.set(u.id, { id: u.id, empresa_id: E, propiedad_id: p.id, nombre: u.nombre, categoria: u.categoria || "otro", m2: num(u.m2), dormitorios: num(u.dormitorios),
-        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, orden: i });
+        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [], orden: i });
       const contratos = [...(u.historial || []).map(c => [c, false]), ...(u.contrato ? [[u.contrato, true]] : [])];
       contratos.forEach(([c, vigente]) => {
         t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
@@ -659,6 +659,7 @@ const TIPOS_DOC = {
   aviso_no_renov: "Carta de aviso de no renovación",
   cobranza:     "Carta de cobranza",
   entrega:      "Acta de entrega del inmueble",
+  inventario:   "Acta de inventario (con fotos)",
 };
 
 function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
@@ -738,6 +739,16 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
 <p><b>PRIMERO:</b> En este acto se hace entrega del inmueble ubicado en ${inmueble}.</p>
 <p><b>SEGUNDO: Estado del inmueble.</b> ${h(extra.texto || "[detalle del estado de muros, pisos, artefactos, llaves entregadas, lecturas de medidores de luz, agua y gas]")}</p>
 <p><b>TERCERO:</b> Ambas partes declaran conformidad con lo señalado en esta acta.</p>${firmas}`;
+    case "inventario": {
+      const items = u.inventario || [];
+      const recintos = [...new Set(items.map(i => i.recinto || "General"))];
+      const fotos = i => (i.fotos || []).map(f => `<img src="${f}" style="width:110px;height:82px;object-fit:cover;margin:4px 4px 0 0;border-radius:4px"/>`).join("");
+      const tablas = recintos.map(rc => `<p><b>${h(rc)}</b></p><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;margin-bottom:12px"><tr><td><b>Ítem</b></td><td><b>Cant.</b></td><td><b>Estado</b></td><td><b>Observaciones y fotos</b></td></tr>${
+        items.filter(i => (i.recinto || "General") === rc).map(i => `<tr><td>${h(i.nombre)}</td><td>${h(i.cantidad || 1)}</td><td>${ESTADOS_INV[i.estado] || "—"}</td><td>${h(i.notas || "")}${(i.fotos || []).length ? "<br/>" + fotos(i) : ""}</td></tr>`).join("")}</table>`).join("");
+      return `<h2>ACTA DE INVENTARIO</h2><p>${partes}, dejan constancia del siguiente inventario del inmueble ubicado en ${inmueble}, que se entrega junto con el contrato de arrendamiento y que el Arrendatario se obliga a restituir en el mismo estado, salvo el desgaste producido por el uso legítimo:</p>
+${tablas || "<p>[Sin ítems registrados. Agrégalos en la pestaña Inventario de la ficha.]</p>"}
+<p>Ambas partes declaran conformidad con el presente inventario, que forma parte integrante del contrato de arrendamiento.</p>${firmas}`;
+    }
     default: return "";
   }
 }
@@ -1342,7 +1353,7 @@ const contratoVacio = () => ({
   multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
   pagos: [], multasCondonadas: {},
 });
-const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, contrato: null });
+const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, inventario: [], contrato: null });
 
 function Fotos({ fotos, onChange, editable = true }) {
   const [ver, setVer] = useState(null);
@@ -1959,8 +1970,8 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
     }, `Eliminó el pago de ${nombrePeriodo(pg.periodo)} en "${nombreUnidad(p, u)}"`);
   };
 
-  const tabs = c ? [["resumen", "Resumen"], ["arrendatario", "Arrendatario"], ["pagos", `Pagos${r.deudas.length ? " ⚠️" : ""}`], ["fotos", "Fotos"], ["docs", `Documentos (${docs.length})`]]
-                 : [["resumen", "Resumen"], ["fotos", "Fotos"], ["interesados", `Interesados (${interes.length})`], ["docs", `Documentos (${docs.length})`]];
+  const tabs = c ? [["resumen", "Resumen"], ["arrendatario", "Arrendatario"], ["pagos", `Pagos${r.deudas.length ? " ⚠️" : ""}`], ["fotos", "Fotos"], ["inventario", `Inventario (${(u.inventario || []).length})`], ["docs", `Documentos (${docs.length})`]]
+                 : [["resumen", "Resumen"], ["fotos", "Fotos"], ["inventario", `Inventario (${(u.inventario || []).length})`], ["interesados", `Interesados (${interes.length})`], ["docs", `Documentos (${docs.length})`]];
 
   return (
     <div>
@@ -2100,6 +2111,8 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
           <Fotos fotos={u.fotos} editable={puede(user, "editar")} onChange={f => update(s => { s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).fotos = f; }, `Actualizó fotos de "${nombreUnidad(p, u)}"`)} />
         )}
 
+        {tab === "inventario" && <InventarioTab p={p} u={u} setModal={setModal} />}
+
         {tab === "interesados" && (
           interes.length ? <div className="grid" style={{ gap: 6 }}>{interes.map(x => (
             <div key={x.id} className="alert-row" style={{ cursor: "default" }}>
@@ -2125,6 +2138,91 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
 }
 
 
+// ─── INVENTARIO ───────────────────────────────────────────────────────────────
+const ESTADOS_INV = { nuevo: "Nuevo", bueno: "Bueno", regular: "Regular", malo: "Malo" };
+const COLOR_INV = { nuevo: C.success, bueno: C.info, regular: C.warning, malo: C.danger };
+const RECINTOS = ["Living", "Comedor", "Cocina", "Dormitorio principal", "Dormitorio 2", "Dormitorio 3", "Baño", "Baño 2", "Logia", "Terraza", "Bodega", "Estacionamiento", "Local", "Oficina", "General"];
+
+function InventarioTab({ p, u, setModal }) {
+  const { update, user } = useApp();
+  const [editar, setEditar] = useState(null);
+  const items = u.inventario || [];
+  const puedeEditar = puede(user, "editar");
+  const recintos = [...new Set(items.map(i => i.recinto || "General"))];
+
+  const guardar = () => {
+    const it = { ...editar, nombre: editar.nombre.trim() };
+    if (!it.nombre) return alert("Escribe el nombre del ítem");
+    const existe = items.some(x => x.id === it.id);
+    update(s => {
+      const uu = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id);
+      const lista = [...(uu.inventario || [])];
+      const i = lista.findIndex(x => x.id === it.id);
+      if (i >= 0) lista[i] = it; else lista.push(it);
+      uu.inventario = lista;
+    }, `${existe ? "Editó" : "Agregó"} "${it.nombre}" en el inventario de "${nombreUnidad(p, u)}"`);
+    setEditar(null);
+  };
+  const borrar = it => {
+    if (!confirm(`¿Quitar "${it.nombre}" del inventario?`)) return;
+    update(s => {
+      const uu = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id);
+      uu.inventario = (uu.inventario || []).filter(x => x.id !== it.id);
+    }, `Quitó "${it.nombre}" del inventario de "${nombreUnidad(p, u)}"`);
+    setEditar(null);
+  };
+
+  return (
+    <div className="grid" style={{ gap: 14 }}>
+      <div className="row">
+        {puedeEditar && <button className="btn btn-primary btn-sm" onClick={() => setEditar({ id: uid(), recinto: "", nombre: "", cantidad: 1, estado: "bueno", notas: "", fotos: [] })}>+ Agregar ítem</button>}
+        <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "doc", tipo: "inventario" })}>📄 Acta de inventario</button>
+      </div>
+      {!items.length ? <div className="empty">Sin inventario. Agrega muebles, artefactos, llaves y su estado, con fotos.</div> : recintos.map(rc => (
+        <div key={rc}>
+          <div className="label">{rc}</div>
+          <div className="grid" style={{ gap: 6 }}>
+            {items.filter(i => (i.recinto || "General") === rc).map(i => (
+              <div key={i.id} className="alert-row" onClick={() => puedeEditar && setEditar({ ...i })} style={{ cursor: puedeEditar ? "pointer" : "default" }}>
+                {(i.fotos || [])[0] ? <img src={i.fotos[0]} alt="" style={{ width: 52, height: 40, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} /> : <span style={{ fontSize: 22, width: 52, textAlign: "center" }}>📦</span>}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{i.nombre}{Number(i.cantidad) > 1 ? ` × ${i.cantidad}` : ""}</div>
+                  <div className="muted">{i.notas || ""}{(i.fotos || []).length ? `${i.notas ? " · " : ""}${i.fotos.length} foto${i.fotos.length > 1 ? "s" : ""}` : ""}</div>
+                </div>
+                <span className="tag" style={{ background: C.bg, color: COLOR_INV[i.estado] || C.textDim, border: `1px solid ${C.border}` }}>{ESTADOS_INV[i.estado] || "—"}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      {editar && (
+        <Modal titulo={items.some(x => x.id === editar.id) ? `Editar: ${editar.nombre}` : "Nuevo ítem de inventario"} onClose={() => setEditar(null)} ancho={640}
+          pie={<>
+            {items.some(x => x.id === editar.id) && <button className="btn btn-danger" style={{ marginRight: "auto" }} onClick={() => borrar(editar)}>Quitar</button>}
+            <button className="btn btn-ghost" onClick={() => setEditar(null)}>Cancelar</button>
+            <button className="btn btn-primary" onClick={guardar}>Guardar</button>
+          </>}>
+          <div className="form-grid">
+            <Campo label="Recinto"><input className="input" list="recintos-inv" value={editar.recinto} onChange={e => setEditar({ ...editar, recinto: e.target.value })} placeholder="Ej: Cocina" /></Campo>
+            <Campo label="Ítem"><input className="input" value={editar.nombre} onChange={e => setEditar({ ...editar, nombre: e.target.value })} placeholder="Ej: Refrigerador Samsung" autoFocus /></Campo>
+            <Campo label="Cantidad"><input className="input" type="number" min="1" value={editar.cantidad} onChange={e => setEditar({ ...editar, cantidad: e.target.value })} /></Campo>
+            <Campo label="Estado">
+              <select className="select" value={editar.estado} onChange={e => setEditar({ ...editar, estado: e.target.value })}>
+                {Object.entries(ESTADOS_INV).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </Campo>
+            <Campo label="Observaciones" span><textarea className="input" rows={2} value={editar.notas} onChange={e => setEditar({ ...editar, notas: e.target.value })} placeholder="Ej: rayón en la puerta, funciona bien" /></Campo>
+          </div>
+          <datalist id="recintos-inv">{RECINTOS.map(r => <option key={r} value={r} />)}</datalist>
+          <div className="label" style={{ marginTop: 14 }}>Fotos</div>
+          <Fotos fotos={editar.fotos} onChange={f => setEditar({ ...editar, fotos: f })} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+
 // ─── DOCUMENTOS ───────────────────────────────────────────────────────────────
 function DocumentoModal({ p, u, tipoInicial, onClose }) {
   const { st, hoy, uf, update, user, toast } = useApp();
@@ -2140,7 +2238,7 @@ function DocumentoModal({ p, u, tipoInicial, onClose }) {
     update(s => { s.documentos.unshift({ id: uid(), propId: p.id, unidadId: u.id, tipo, titulo, fecha: toISO(new Date()), autor: user.nombre, html: actual() }); }, `Generó "${titulo}"`);
     toast("Documento guardado en la ficha");
   };
-  const necesitaContrato = !u.contrato && tipo !== "contrato_hab" && tipo !== "contrato_com";
+  const necesitaContrato = !u.contrato && !["contrato_hab", "contrato_com", "inventario"].includes(tipo);
   return (
     <Modal titulo="Generar contrato o anexo" onClose={onClose} ancho={920}
       pie={<>
