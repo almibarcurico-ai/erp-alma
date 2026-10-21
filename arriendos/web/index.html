@@ -17,6 +17,8 @@
     header { background: var(--p); color: #fff; padding: 28px 16px 70px; }
     .wrap { max-width: 1180px; margin: 0 auto; }
     header h1 { margin: 0; font-size: 26px; }
+    .marca { display: flex; align-items: center; gap: 16px; }
+    .marca img { height: 64px; max-width: 200px; object-fit: contain; background: #fff; border-radius: 12px; padding: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.15); }
     header p { margin: 8px 0 0; opacity: .85; max-width: 720px; line-height: 1.5; }
     header .acciones { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
     .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: #fff; color: var(--text); padding: 9px 14px; border-radius: 9px; cursor: pointer; font-weight: 600; text-decoration: none; font-size: 13.5px; }
@@ -87,6 +89,7 @@
       .filtros:not(.abierto) .avanzado { display: none; }
       .mas-filtros { display: inline-flex; }
       header h1 { font-size: 21px; }
+      .marca img { height: 48px; max-width: 140px; padding: 6px; }
       .detalle { grid-template-columns: 1fr; padding: 16px; }
       #mapa { height: 420px; }
       .overlay { padding: 0; }
@@ -96,7 +99,7 @@
 </head>
 <body>
   <header><div class="wrap">
-    <h1 id="titulo">Cargando…</h1>
+    <div class="marca"><img id="logo" alt="" hidden/><h1 id="titulo">Cargando…</h1></div>
     <p id="descripcion"></p>
     <div class="acciones" id="acciones"></div>
   </div></header>
@@ -343,6 +346,11 @@ async function iniciar() {
   document.title = `${empresa.titulo} · Propiedades disponibles`;
   document.querySelector('meta[name="description"]').content = empresa.descripcion || `Propiedades en arriendo y venta de ${empresa.nombre}`;
   $("titulo").textContent = empresa.titulo;
+  const logo = fotoSegura(empresa.logo);
+  if (logo && logo.startsWith("https://")) {
+    $("logo").src = logo; $("logo").alt = empresa.nombre; $("logo").hidden = false;
+    document.querySelector('link[rel="icon"]').href = logo;
+  }
   $("descripcion").textContent = empresa.descripcion || "Propiedades disponibles en arriendo y venta.";
   $("acciones").innerHTML = [
     empresa.whatsapp && `<a class="btn btn-wa" target="_blank" rel="noopener" href="https://wa.me/${telWA(empresa.whatsapp)}?text=${encodeURIComponent("Hola, vi su página de propiedades y quiero más información.")}">WhatsApp</a>`,
