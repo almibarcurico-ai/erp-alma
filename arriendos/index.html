@@ -587,7 +587,10 @@ function calcUnidad(u, hoy, uf) {
   const diasTermino = c.termino ? diffDias(parseISO(c.termino), hoy) : null;
   // Abonos en meses que aún no quedan pagados (para mostrarlos en cobranza)
   const abonosPendCLP = (c.abonos || []).filter(a => !pagados.has(a.periodo)).reduce((t, a) => t + a.montoCLP, 0);
-  return { estado, deudas, proxVenc, canonCLP, multa, deudaCLP, diasTermino, periodoActivo: pers.includes(actual), pagados, abonosPendCLP };
+  // Lo que falta para completar los meses con abonos (renta, a la UF de hoy)
+  const faltaAbonadosCLP = [...new Set((c.abonos || []).filter(a => !pagados.has(a.periodo)).map(a => a.periodo))]
+    .reduce((t, p) => t + aCLP(saldoMes(c, p), c.moneda, uf), 0);
+  return { faltaAbonadosCLP, estado, deudas, proxVenc, canonCLP, multa, deudaCLP, diasTermino, periodoActivo: pers.includes(actual), pagados, abonosPendCLP };
 }
 
 function calcPropiedad(p, hoy, uf) {
@@ -2422,9 +2425,9 @@ function CobranzaView() {
                 <td>{c.arrendatario.nombre}</td>
                 <td>{r.deudas.length ? fmtFecha(r.deudas[0].venc) : r.proxVenc ? fmtFecha(r.proxVenc) : "—"}</td>
                 <td><Badge estado={r.estado}>{r.estado === "atrasado" ? `Atrasado ${r.deudas[0].dias}d` : null}</Badge></td>
-                <td className="num">{fmtRenta(c)}</td>
+                <td className="num">{fmtRenta(c)}{r.abonosPendCLP > 0 && <div style={{ fontSize: 11.5, color: C.success, fontWeight: 500 }}>abonado {fmtCLP(r.abonosPendCLP)} · falta {fmtCLP(r.faltaAbonadosCLP)}</div>}</td>
                 <td className="num">{c.multa?.cobrar ? (r.multa ? fmtMonto(r.multa, c.moneda) : "$0") : <span className="muted">no cobra</span>}</td>
-                <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}{r.abonosPendCLP > 0 && <div className="muted" style={{ fontWeight: 400 }}>abonado {fmtCLP(r.abonosPendCLP)}</div>}</td>
+                <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}</td>
                 <td onClick={e => e.stopPropagation()}>
                   <div className="row" style={{ flexWrap: "nowrap" }}>
                     {puede(user, "pagos") && (r.estado === "pagado"
