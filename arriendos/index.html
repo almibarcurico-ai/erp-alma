@@ -535,16 +535,23 @@ function calcUnidad(u, hoy, uf) {
   const actual = periodoDe(hoy);
   const vAct = vencimiento(actual, c.diaPago);
   let estado, proxVenc = null;
+  const desde = primerPeriodo(c);
+  // Primer mes sin pagar desde p (los pagos pueden ir adelantados)
+  const siguienteImpago = p => { for (let k = 0; pagados.has(p) && k < 240; k++) p = sumarMes(p, 1); return p; };
   if (deudas.length) estado = "atrasado";
-  else if (pagados.has(actual) || !pers.includes(actual)) {
-    estado = pagados.has(actual) ? "pagado" : "pendiente";
-    const sig = sumarMes(actual, 1);
-    proxVenc = vencimiento(pers.length ? sig : (primerPeriodo(c) || sig), c.diaPago);
+  else if (!pers.includes(actual)) {
+    // Aún no empieza a cobrarse (o ya terminó): "pagado" si el primer mes ya está pagado
+    estado = desde && pagados.has(desde) ? "pagado" : "pendiente";
+    proxVenc = vencimiento(siguienteImpago(desde && desde > actual ? desde : sumarMes(actual, 1)), c.diaPago);
+  } else if (pagados.has(actual)) {
+    estado = "pagado";
+    proxVenc = vencimiento(siguienteImpago(sumarMes(actual, 1)), c.diaPago);
   } else {
     const d = diffDias(vAct, hoy);
     estado = d === 0 ? "hoy" : d <= DIAS_AVISO ? "proximo" : "pendiente";
     proxVenc = vAct;
   }
+  if (proxVenc && c.termino && periodoDe(proxVenc) > periodoDe(parseISO(c.termino))) proxVenc = null;
   const canonCLP = aCLP(c.valor, c.moneda, uf) * conIVA(c);
   const multa = deudas.reduce((s, d) => s + d.multa, 0);
   const deudaCLP = aCLP(deudas.length * (Number(c.valor) || 0) * conIVA(c) + multa, c.moneda, uf);
@@ -1695,8 +1702,14 @@ function PagoModal({ p, u, onClose }) {
   const r = calcUnidad(u, hoy, uf);
   const pagados = new Set((c.pagos || []).map(x => x.periodo));
   const actual = periodoDe(hoy);
+  // Todos los meses impagos desde el inicio del contrato y hasta 12 meses después del último pagado (sin pasar el término)
   const desde = primerPeriodo(c) || actual;
-  const opciones = [...new Set([...r.deudas.map(d => d.periodo), actual, sumarMes(actual, 1), desde])].filter(x => !pagados.has(x) && x >= desde).sort();
+  const ultimoPagado = [...pagados].sort().pop();
+  const fin = c.termino ? periodoDe(parseISO(c.termino)) : null;
+  let tope = sumarMes([actual, ultimoPagado || desde, desde].sort().pop(), 12);
+  if (fin && fin < tope) tope = fin;
+  const opciones = [];
+  for (let x = desde; x <= tope && opciones.length < 60; x = sumarMes(x, 1)) if (!pagados.has(x)) opciones.push(x);
   const [f, setF] = useState(() => ({ periodo: opciones[0] || actual, fecha: toISO(hoy), ufDia: Math.round(uf * 100) / 100, metodo: "Transferencia", obs: "", condonar: false }));
   const fechaPago = parseISO(f.fecha) || hoy;
   const diasAtraso = diffDias(fechaPago, vencimiento(f.periodo, c.diaPago));
@@ -1725,7 +1738,8 @@ function PagoModal({ p, u, onClose }) {
       <div className="form-grid">
         <Campo label="Mes que paga">
           <select className="select" value={f.periodo} onChange={e => setF({ ...f, periodo: e.target.value })}>
-            {opciones.map(o => <option key={o} value={o}>{nombrePeriodo(o)}{r.deudas.some(d => d.periodo === o) ? " (atrasado)" : ""}</option>)}
+            {!opciones.length && <option value="">Todos los meses del contrato están pagados</option>}
+            {opciones.map(o => <option key={o} value={o}>{nombrePeriodo(o)}{r.deudas.some(d => d.periodo === o) ? " (atrasado)" : o > actual ? " (adelantado)" : ""}</option>)}
           </select>
         </Campo>
         <Campo label="Fecha de pago"><input className="input" type="date" value={f.fecha} onChange={e => setF({ ...f, fecha: e.target.value })} /></Campo>
@@ -2349,7 +2363,9 @@ function CobranzaView() {
                 <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}</td>
                 <td onClick={e => e.stopPropagation()}>
                   <div className="row" style={{ flexWrap: "nowrap" }}>
-                    {puede(user, "pagos") && r.estado !== "pagado" && <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "pago", p, u })}>Pagó</button>}
+                    {puede(user, "pagos") && (r.estado === "pagado"
+                      ? <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "pago", p, u })} title="Registrar el pago de un mes siguiente">Adelantar</button>
+                      : <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "pago", p, u })}>Pagó</button>)}
                     <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "com", p, u })}>Avisar</button>
                   </div>
                 </td>
