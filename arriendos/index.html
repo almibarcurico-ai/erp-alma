@@ -849,13 +849,19 @@ function tooltipHTML(p, cp, uf) {
   if (p.tipo === "centro") {
     h += `<div class="r"><span>Locales</span><span>${p.unidades.length} (${cp.ocupadas} ocupados · ${cp.libres} libres)</span></div>`;
     Object.entries(cp.cuenta).sort((a, b) => EST[a[0]].ord - EST[b[0]].ord).forEach(([k, n]) => { h += `<div class="r"><span>· ${EST[k].label}</span><span>${n}</span></div>`; });
-    if (cp.canonCLP) h += `<div class="r"><span>Renta mensual</span><span>${fmtCLP(cp.canonCLP)}</span></div>`;
+    if (cp.canonCLP) {
+      // Suma en UF solo si todos los locales ocupados arriendan en UF; si hay alguno en pesos, solo el total en pesos
+      const cs = cp.us.filter(x => x.u.contrato).map(x => x.u.contrato);
+      const todoUF = cs.every(c => c.moneda !== "CLP");
+      const totalUF = cs.reduce((t, c) => t + (Number(c.valor) || 0), 0);
+      h += `<div class="r"><span>Renta mensual</span><span>${todoUF ? fmtUF(totalUF) + " · " : ""}${fmtCLP(cp.canonCLP)}</span></div>`;
+    }
   } else {
     const { u, r } = cp.us[0] || {};
     if (u && u.contrato) {
       const c = u.contrato;
       h += `<div class="r"><span>Arrendatario</span><span>${esc(c.arrendatario?.nombre || "—")}</span></div>`;
-      h += `<div class="r"><span>Renta</span><span>${fmtMonto(c.valor, c.moneda)}</span></div>`;
+      h += `<div class="r"><span>Renta mensual</span><span>${c.moneda === "CLP" ? "" : fmtUF(c.valor) + " · "}${fmtCLP(r.canonCLP)}</span></div>`;
       h += `<div class="r"><span>Día de pago</span><span>${c.diaPago} de cada mes</span></div>`;
       if (r.proxVenc) h += `<div class="r"><span>Próximo venc.</span><span>${fmtFecha(r.proxVenc)}</span></div>`;
     } else if (u) {
