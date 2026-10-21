@@ -307,6 +307,29 @@ const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // Fotos en Supabase Storage (bucket "fotos"): <empresa>/<uuid>.jpg, con URL pública no adivinable
+// Logo: se reduce a 400 px como máximo y se guarda en PNG para conservar la transparencia
+function logoPNG(file) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onerror = rej;
+    img.onload = () => {
+      const k = Math.min(1, 400 / Math.max(img.width, img.height));
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(img.src);
+      cv.toBlob(b => b ? res(b) : rej(new Error("No se pudo leer la imagen")), "image/png");
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function subirLogo(empresaId, file) {
+  const ruta = `${empresaId}/logo-${uid()}.png`;
+  const { error } = await sb.storage.from("fotos").upload(ruta, await logoPNG(file), { contentType: "image/png", cacheControl: "31536000" });
+  if (error) throw error;
+  return sb.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
+}
+
 async function subirFoto(empresaId, dataURL) {
   const blob = await (await fetch(dataURL)).blob();
   const ruta = `${empresaId}/${uid()}.jpg`;
@@ -2991,6 +3014,16 @@ function WebCard() {
   const { st, update, toast } = useApp();
   const [w, setW] = useState(() => ({ activa: false, titulo: "", descripcion: "", color: "#1A3A8A", whatsapp: "", email: "", ...st.empresa.web, slug: st.empresa.slug || aSlug(st.empresa.nombre) }));
   const set = (k, v) => setW(x => ({ ...x, [k]: v }));
+  const [subiendoLogo, setSubiendoLogo] = useState(false);
+  const elegirLogo = async e => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) return toast("Usa una imagen PNG, JPG o WEBP");
+    setSubiendoLogo(true);
+    try { set("logo", await subirLogo(st.empresa.id, f)); toast("Logo cargado. Presiona Guardar para publicarlo."); }
+    catch (err) { toast("No se pudo subir el logo: " + mensajeError(err)); }
+    setSubiendoLogo(false);
+  };
   const guardado = st.empresa.slug && st.empresa.web && st.empresa.web.activa;
   const libres = listarUnidades(st).filter(x => !x.u.contrato && x.u.publicar !== false).length;
   const guardar = () => {
@@ -3013,6 +3046,14 @@ function WebCard() {
         <Campo label="Título"><input className="input" value={w.titulo} onChange={e => set("titulo", e.target.value)} placeholder={st.empresa.nombre} /></Campo>
         <Campo label="WhatsApp de contacto"><input className="input" value={w.whatsapp} onChange={e => set("whatsapp", e.target.value)} placeholder={st.empresa.telefono || "+56 9 1234 5678"} /></Campo>
         <Campo label="Correo de contacto"><input className="input" value={w.email} onChange={e => set("email", e.target.value)} placeholder={st.empresa.email} /></Campo>
+        <Campo label="Logo">
+          <div className="row" style={{ flexWrap: "nowrap" }}>
+            {w.logo && <img src={w.logo} alt="Logo" style={{ height: 38, maxWidth: 110, objectFit: "contain", background: w.color || "#1A3A8A", borderRadius: 6, padding: 4 }} />}
+            <label className="btn btn-ghost btn-sm" style={{ cursor: "pointer" }}>{subiendoLogo ? "Subiendo…" : w.logo ? "Cambiar" : "Subir logo"}
+              <input type="file" accept="image/png,image/jpeg,image/webp" hidden disabled={subiendoLogo} onChange={elegirLogo} /></label>
+            {w.logo && <button type="button" className="btn btn-ghost btn-sm" onClick={() => set("logo", "")}>Quitar</button>}
+          </div>
+        </Campo>
         <Campo label="Color principal"><input className="input" type="color" style={{ height: 38, padding: 4 }} value={w.color || "#1A3A8A"} onChange={e => set("color", e.target.value)} /></Campo>
         <Campo label="Presentación" span><textarea className="input" rows={2} value={w.descripcion} onChange={e => set("descripcion", e.target.value)} placeholder="Ej: Corredora de propiedades en Santiago desde 2010. Arriendo y venta de casas, departamentos y locales." /></Campo>
       </div>
