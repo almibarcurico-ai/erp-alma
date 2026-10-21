@@ -314,7 +314,7 @@ function mensajeError(e) {
   return m;
 }
 
-const aContrato = (c, pagos) => ({
+const aContrato = (c, pagos, abonos) => ({
   id: c.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: c.termino || "", diaPago: c.dia_pago, moneda: c.moneda,
   valor: Number(c.valor), iva: !!c.iva, garantia: c.garantia == null ? "" : Number(c.garantia), multa: c.multa,
   multasCondonadas: Object.fromEntries((c.multas_condonadas || []).map(p => [p, true])),
@@ -324,18 +324,23 @@ const aContrato = (c, pagos) => ({
     montoCLP: p.monto_clp, multaCLP: p.multa_clp, ivaCLP: p.iva_clp || 0, metodo: p.medio || "", obs: p.obs || "",
     registradoPor: p.registrado_nombre || "", registrado: Date.parse(p.creado),
   })),
+  abonos: abonos.filter(a => a.contrato_id === c.id).map(a => ({
+    id: a.id, periodo: a.periodo, fecha: a.fecha, ufDia: a.uf_dia == null ? null : Number(a.uf_dia), montoCLP: a.monto_clp,
+    metodo: a.medio || "", obs: a.obs || "", registradoPor: a.registrado_nombre || "", registrado: Date.parse(a.creado),
+  })),
 });
 const vacio = v => v == null ? "" : v;
 
 async function cargarEmpresa(E) {
   const f = t => () => sb.from(t).select("*").eq("empresa_id", E);
-  const [emp, sus, props, unis, cons, pags, docs, ints, bit, mies, invs] = await Promise.all([
+  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs] = await Promise.all([
     q(sb.from("empresas").select("*").eq("id", E).single()),
     q(sb.from("suscripciones").select("*, planes(nombre, max_unidades)").eq("empresa_id", E).maybeSingle()),
     todas(() => f("propiedades")().order("creado")),
     todas(() => f("unidades")().order("orden")),
     todas(f("contratos")),
     todas(f("pagos")),
+    todas(f("abonos")),
     todas(() => f("documentos")().order("creado", { ascending: false })),
     todas(() => f("interesados")().order("creado", { ascending: false })),
     q(f("bitacora")().order("creado", { ascending: false }).limit(1000)),
@@ -357,8 +362,8 @@ async function cargarEmpresa(E) {
         return {
           id: u.id, nombre: u.nombre, categoria: u.categoria, m2: vacio(u.m2), dormitorios: vacio(u.dormitorios), banos: vacio(u.banos),
           estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [],
-          contrato: vig ? aContrato(vig, pags) : null,
-          historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags)),
+          contrato: vig ? aContrato(vig, pags, abns) : null,
+          historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags, abns)),
         };
       }),
     })),
@@ -370,7 +375,7 @@ async function cargarEmpresa(E) {
 
 // Convierte el estado de la app en filas por tabla, para comparar y guardar solo lo que cambió
 function filas(st, E) {
-  const t = { empresas: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), documentos: new Map(), interesados: new Map() };
+  const t = { empresas: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), abonos: new Map(), documentos: new Map(), interesados: new Map() };
   const e = st.empresa, n = v => v === "" || v == null ? null : v;
   t.empresas.set(e.id, { id: e.id, nombre: e.nombre, rut: n(e.rut), direccion: n(e.direccion), email: n(e.email), telefono: n(e.telefono), representante: n(e.representante), rut_rep: n(e.rutRep) });
   st.propiedades.forEach(p => {
@@ -387,6 +392,8 @@ function filas(st, E) {
           vigente, terminado: vigente ? null : n(c.terminado) });
         (c.pagos || []).forEach(pg => t.pagos.set(pg.id, { id: pg.id, empresa_id: E, contrato_id: c.id, periodo: pg.periodo, fecha: pg.fecha,
           uf_dia: num(pg.ufDia), monto_clp: Math.round(pg.montoCLP || 0), multa_clp: Math.round(pg.multaCLP || 0), iva_clp: Math.round(pg.ivaCLP || 0), medio: n(pg.metodo), obs: n(pg.obs), registrado_nombre: n(pg.registradoPor) }));
+        (c.abonos || []).forEach(a => t.abonos.set(a.id, { id: a.id, empresa_id: E, contrato_id: c.id, periodo: a.periodo, fecha: a.fecha,
+          uf_dia: num(a.ufDia), monto_clp: Math.round(a.montoCLP || 0), medio: n(a.metodo), obs: n(a.obs), registrado_nombre: n(a.registradoPor) }));
       });
     });
   });
@@ -395,7 +402,7 @@ function filas(st, E) {
   return t;
 }
 
-const TABLAS = ["empresas", "propiedades", "unidades", "contratos", "pagos", "documentos", "interesados"];
+const TABLAS = ["empresas", "propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados"];
 async function sincronizar(prev, next, E) {
   const a = filas(prev, E), b = filas(next, E);
   const creadas = [];
@@ -436,7 +443,7 @@ async function escribir(a, b, creadas) {
 function conIdsNuevos(d) {
   const mapa = {};
   const id = viejo => mapa[viejo] || (mapa[viejo] = uid());
-  const contrato = c => ({ ...c, id: uid(), pagos: (c.pagos || []).map(pg => ({ ...pg, id: uid() })) });
+  const contrato = c => ({ ...c, id: uid(), pagos: (c.pagos || []).map(pg => ({ ...pg, id: uid() })), abonos: (c.abonos || []).map(a => ({ ...a, id: uid() })) });
   const propiedades = (d.propiedades || []).map(p => ({ ...p, id: id(p.id), arrendador: p.arrendador || {},
     unidades: (p.unidades || []).map(u => ({ ...u, id: id(u.id), fotos: u.fotos || [], contrato: u.contrato ? contrato(u.contrato) : null, historial: (u.historial || []).map(contrato) })) }));
   const documentos = (d.documentos || []).filter(x => mapa[x.unidadId]).map(x => ({ ...x, id: uid(), propId: mapa[x.propId], unidadId: mapa[x.unidadId] }));
@@ -520,17 +527,38 @@ function descripcionMulta(c) {
   return base + (Number(m.diasGracia) ? `, después de ${m.diasGracia} días de gracia` : "") + (Number(m.tope) ? ` (tope ${c.moneda === "CLP" ? fmtCLP(m.tope) : m.tope + " " + u})` : "");
 }
 
+// Abonos: pagos parciales de un mes. Se llevan a la moneda del contrato (UF al valor del día del abono)
+// y cubren primero la renta del mes (IVA incluido) y luego la multa por atraso, si se cobra.
+const totalMes = c => (Number(c.valor) || 0) * conIVA(c);
+const abonadoMes = (c, periodo) => (c.abonos || []).filter(a => a.periodo === periodo)
+  .reduce((t, a) => t + (c.moneda === "CLP" ? a.montoCLP : a.montoCLP / (Number(a.ufDia) || 1)), 0);
+const saldoMes = (c, periodo) => Math.max(0, totalMes(c) - abonadoMes(c, periodo));
+const abonadoMesCLP = (c, periodo) => (c.abonos || []).filter(a => a.periodo === periodo).reduce((t, a) => t + a.montoCLP, 0);
+// Multa que queda por pagar después de cubrir la renta con abonos
+const multaPendiente = (c, periodo, multa) => Math.max(0, multa - Math.max(0, abonadoMes(c, periodo) - totalMes(c)));
+// Meses pagados: con un pago registrado, o cuando los abonos cubren la renta y la multa
+// calculada a la fecha del último abono (tolerancia de redondeo de 0,1%)
+function mesesPagados(c) {
+  const set = new Set((c.pagos || []).map(p => p.periodo));
+  new Set((c.abonos || []).map(a => a.periodo)).forEach(p => {
+    const ultimo = (c.abonos || []).filter(a => a.periodo === p).map(a => a.fecha).sort().pop();
+    const multa = calcMulta(c, diffDias(parseISO(ultimo), vencimiento(p, c.diaPago)), p);
+    if (abonadoMes(c, p) >= (totalMes(c) + multa) * 0.999) set.add(p);
+  });
+  return set;
+}
+
 function calcUnidad(u, hoy, uf) {
   const c = u.contrato;
   if (!c) return { estado: "libre", deudas: [], canonCLP: 0, multa: 0, deudaCLP: 0 };
   const pers = periodosContrato(c, hoy);
-  const pagados = new Set((c.pagos || []).map(p => p.periodo));
+  const pagados = mesesPagados(c);
   const deudas = [];
   pers.forEach(p => {
     if (pagados.has(p)) return;
     const v = vencimiento(p, c.diaPago);
     const dias = diffDias(hoy, v);
-    if (dias > 0) deudas.push({ periodo: p, venc: v, dias, multa: calcMulta(c, dias, p) });
+    if (dias > 0) deudas.push({ periodo: p, venc: v, dias, multa: multaPendiente(c, p, calcMulta(c, dias, p)), saldo: saldoMes(c, p), abonadoCLP: abonadoMesCLP(c, p) });
   });
   const actual = periodoDe(hoy);
   const vAct = vencimiento(actual, c.diaPago);
@@ -554,9 +582,11 @@ function calcUnidad(u, hoy, uf) {
   if (proxVenc && c.termino && periodoDe(proxVenc) > periodoDe(parseISO(c.termino))) proxVenc = null;
   const canonCLP = aCLP(c.valor, c.moneda, uf) * conIVA(c);
   const multa = deudas.reduce((s, d) => s + d.multa, 0);
-  const deudaCLP = aCLP(deudas.length * (Number(c.valor) || 0) * conIVA(c) + multa, c.moneda, uf);
+  const deudaCLP = aCLP(deudas.reduce((t, d) => t + d.saldo, 0) + multa, c.moneda, uf);
   const diasTermino = c.termino ? diffDias(parseISO(c.termino), hoy) : null;
-  return { estado, deudas, proxVenc, canonCLP, multa, deudaCLP, diasTermino, periodoActivo: pers.includes(actual) };
+  // Abonos en meses que aún no quedan pagados (para mostrarlos en cobranza)
+  const abonosPendCLP = (c.abonos || []).filter(a => !pagados.has(a.periodo)).reduce((t, a) => t + a.montoCLP, 0);
+  return { estado, deudas, proxVenc, canonCLP, multa, deudaCLP, diasTermino, periodoActivo: pers.includes(actual), pagados, abonosPendCLP };
 }
 
 function calcPropiedad(p, hoy, uf) {
@@ -585,7 +615,8 @@ function resumenFinanciero(st, hoy, uf) {
   listarUnidades(st).forEach(({ p, u }) => {
     total++;
     const c = u.contrato;
-    const todos = [...(u.historial || []).flatMap(h => h.pagos || []), ...((c && c.pagos) || [])];
+    const contratos = [...(u.historial || []), ...(c ? [c] : [])];
+    const todos = contratos.flatMap(k => [...(k.pagos || []), ...(k.abonos || []).map(a => ({ ...a, esAbono: true }))]);
     todos.forEach(pg => {
       const mes = pg.fecha.slice(0, 7);
       const m = (pg.montoCLP || 0) + (pg.multaCLP || 0);
@@ -597,7 +628,7 @@ function resumenFinanciero(st, hoy, uf) {
     const r = calcUnidad(u, hoy, uf);
     if (r.periodoActivo) {
       esperado += r.canonCLP;
-      if (!(c.pagos || []).some(pg => pg.periodo === actual)) porCobrar += r.canonCLP;
+      if (!r.pagados.has(actual)) porCobrar += aCLP(saldoMes(c, actual), c.moneda, uf);
     }
     morosidad += r.deudaCLP;
     multas += aCLP(r.multa, c.moneda, uf);
@@ -621,7 +652,7 @@ function mensajes(p, u, r, uf, empresa) {
       texto: `Estimado/a ${a.nombre || ""}:\n\nLe recordamos que el arriendo de ${nom} (${p.direccion}) por ${monto} vence el ${fmtFecha(r.proxVenc || vencimiento(periodoDe(new Date()), c.diaPago))}.\n\nPuede transferir a la cuenta habitual y enviarnos el comprobante por este medio.${firma}` },
   ];
   if (r.deudas.length) {
-    const det = r.deudas.map(d => `• ${nombrePeriodo(d.periodo)}: ${fmtRenta(c)}${d.multa ? ` + multa ${fmtMonto(d.multa, c.moneda)} (${d.dias} días de atraso)` : ` (${d.dias} días de atraso)`}`).join("\n");
+    const det = r.deudas.map(d => `• ${nombrePeriodo(d.periodo)}: ${d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c)}${d.multa ? ` + multa ${fmtMonto(d.multa, c.moneda)} (${d.dias} días de atraso)` : ` (${d.dias} días de atraso)`}`).join("\n");
     out.push({ id: "atraso", titulo: "Aviso de atraso",
       asunto: `Arriendo atrasado - ${nom}`,
       texto: `Estimado/a ${a.nombre || ""}:\n\nA la fecha registramos el siguiente saldo pendiente por el arriendo de ${nom}:\n\n${det}\n\nTotal adeudado: ${fmtCLP(r.deudaCLP)} (UF a ${fmtCLP(uf)}).\n\nLe solicitamos regularizar a la brevedad. Si ya realizó el pago, por favor envíenos el comprobante.${firma}` });
@@ -732,7 +763,7 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
 <p>Sin otro particular, saluda atentamente,</p><p><br/>______________________<br/>${h(arr.nombre)}<br/>Arrendador</p>`;
     case "cobranza": {
       const r = calcUnidad(u, hoy, uf);
-      const filas = r.deudas.map(d => `<tr><td>${nombrePeriodo(d.periodo)}</td><td>${fmtRenta(c)}</td><td>${d.dias} días</td><td>${d.multa ? fmtMonto(d.multa, c.moneda) : "—"}</td></tr>`).join("");
+      const filas = r.deudas.map(d => `<tr><td>${nombrePeriodo(d.periodo)}</td><td>${d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c)}</td><td>${d.dias} días</td><td>${d.multa ? fmtMonto(d.multa, c.moneda) : "—"}</td></tr>`).join("");
       return `<p style="text-align:right">${ciudad}, ${fecha}</p><p>Señor(a)<br/><b>${h(a.nombre || "___")}</b><br/>Presente</p>
 <p><b>Ref.: Cobranza de rentas de arrendamiento impagas.</b></p>
 <p>De mi consideración:</p><p>Por medio de la presente le informo que, a la fecha, registra rentas impagas por el arrendamiento del inmueble ubicado en ${inmueble}, según el siguiente detalle:</p>
@@ -1228,7 +1259,7 @@ function PanelView() {
                     <span style={{ fontSize: 18 }}>💵</span>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(pg.p, pg.u)}</div>
-                      <div className="muted">{fmtFecha(pg.fecha)} · {pg.metodo} · registró {pg.registradoPor}</div>
+                      <div className="muted">{pg.esAbono ? "Abono · " : ""}{fmtFecha(pg.fecha)} · {pg.metodo} · registró {pg.registradoPor}</div>
                     </div>
                     <div className="num" style={{ fontWeight: 700, color: C.success }}>{fmtCLP(pg.montoCLP + (pg.multaCLP || 0))}</div>
                   </div>
@@ -1696,11 +1727,13 @@ function PropiedadForm({ inicial, onClose }) {
 
 
 // ─── REGISTRO DE PAGO ─────────────────────────────────────────────────────────
-function PagoModal({ p, u, onClose }) {
+function PagoModal({ p, u, onClose, modoInicial = "pago" }) {
   const { update, hoy, uf, user, toast } = useApp();
   const c = u.contrato;
   const r = calcUnidad(u, hoy, uf);
-  const pagados = new Set((c.pagos || []).map(x => x.periodo));
+  const pagados = mesesPagados(c);
+  const [modo, setModo] = useState(modoInicial);
+  const esAbono = modo === "abono";
   const actual = periodoDe(hoy);
   // Todos los meses impagos desde el inicio del contrato y hasta 12 meses después del último pagado (sin pasar el término)
   const desde = primerPeriodo(c) || actual;
@@ -1713,14 +1746,25 @@ function PagoModal({ p, u, onClose }) {
   const [f, setF] = useState(() => ({ periodo: opciones[0] || actual, fecha: toISO(hoy), ufDia: Math.round(uf * 100) / 100, metodo: "Transferencia", obs: "", condonar: false }));
   const fechaPago = parseISO(f.fecha) || hoy;
   const diasAtraso = diffDias(fechaPago, vencimiento(f.periodo, c.diaPago));
-  const multa = f.condonar ? 0 : calcMulta(c, diasAtraso, f.periodo);
-  const montoCLP = Math.round(aCLP(c.valor, c.moneda, Number(f.ufDia)) * conIVA(c));
+  const multa = f.condonar ? 0 : multaPendiente(c, f.periodo, calcMulta(c, diasAtraso, f.periodo));
+  // Renta del mes menos lo ya abonado (IVA incluido)
+  const abonadoCLP = abonadoMesCLP(c, f.periodo);
+  const montoCLP = Math.round(aCLP(saldoMes(c, f.periodo), c.moneda, Number(f.ufDia)));
   const multaCLP = Math.round(aCLP(multa, c.moneda, Number(f.ufDia)));
   const [ajuste, setAjuste] = useState(null);
-  const totalSugerido = montoCLP + multaCLP;
-  const total = ajuste == null ? totalSugerido : Number(ajuste) || 0;
+  const totalSugerido = esAbono ? "" : montoCLP + multaCLP;
+  const total = ajuste == null ? Number(totalSugerido) || 0 : Number(ajuste) || 0;
 
   const guardar = () => {
+    if (esAbono) {
+      if (total <= 0) return toast("Ingresa el monto del abono");
+      update(s => {
+        const cc = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
+        cc.abonos = [...(cc.abonos || []), { id: uid(), periodo: f.periodo, fecha: f.fecha, ufDia: Number(f.ufDia), montoCLP: Math.round(total), metodo: f.metodo, obs: f.obs, registradoPor: user.nombre, registrado: Date.now() }];
+      }, `Registró abono de ${fmtCLP(total)} a ${nombrePeriodo(f.periodo)} en "${nombreUnidad(p, u)}"`);
+      toast(total >= montoCLP + multaCLP ? "Abono registrado: el mes quedó pagado" : `Abono registrado. Saldo del mes: ${fmtCLP(montoCLP + multaCLP - total)}`);
+      return onClose();
+    }
     update(s => {
       const uu = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id);
       const cc = uu.contrato;
@@ -1733,8 +1777,12 @@ function PagoModal({ p, u, onClose }) {
   };
 
   return (
-    <Modal titulo={`Registrar pago · ${nombreUnidad(p, u)}`} onClose={onClose} ancho={560}
-      pie={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-primary" onClick={guardar} disabled={!opciones.length}>Registrar {fmtCLP(total)}</button></>}>
+    <Modal titulo={`${esAbono ? "Registrar abono" : "Registrar pago"} · ${nombreUnidad(p, u)}`} onClose={onClose} ancho={560}
+      pie={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-primary" onClick={guardar} disabled={!opciones.length}>{esAbono ? "Registrar abono" : "Registrar"} {total ? fmtCLP(total) : ""}</button></>}>
+      <div className="row" style={{ marginBottom: 14 }}>
+        {[["pago", "Pago del mes"], ["abono", "Abono (pago parcial)"]].map(([k, l]) =>
+          <button key={k} type="button" className={"btn btn-sm " + (modo === k ? "btn-primary" : "btn-ghost")} onClick={() => { setModo(k); setAjuste(null); }}>{l}</button>)}
+      </div>
       <div className="form-grid">
         <Campo label="Mes que paga">
           <select className="select" value={f.periodo} onChange={e => setF({ ...f, periodo: e.target.value })}>
@@ -1752,11 +1800,14 @@ function PagoModal({ p, u, onClose }) {
       </div>
       <div className="card" style={{ marginTop: 14, background: C.bg, padding: 14 }}>
         <dl className="kv">
-          <dt>Renta</dt><dd>{fmtRenta(c)} = {fmtCLP(montoCLP)}{c.iva ? <span className="muted"> (incluye IVA {fmtCLP(montoCLP - montoCLP / conIVA(c))})</span> : null}</dd>
+          <dt>Renta</dt><dd>{fmtRenta(c)} = {fmtCLP(Math.round(aCLP(totalMes(c), c.moneda, Number(f.ufDia))))}{c.iva ? <span className="muted"> (con IVA)</span> : null}</dd>
+          {abonadoCLP > 0 && <><dt>Abonado</dt><dd>{fmtCLP(abonadoCLP)} en {(c.abonos || []).filter(a => a.periodo === f.periodo).length} abono(s)</dd></>}
+          {abonadoCLP > 0 && <><dt>Saldo de la renta</dt><dd style={{ fontWeight: 700 }}>{fmtCLP(montoCLP)}</dd></>}
           <dt>Vencimiento</dt><dd>{fmtFecha(vencimiento(f.periodo, c.diaPago))} {diasAtraso > 0 ? <span style={{ color: "#DC2626" }}>· {diasAtraso} días de atraso</span> : ""}</dd>
-          <dt>Multa</dt><dd>{c.multa?.cobrar ? (multa ? `${fmtMonto(multa, c.moneda)} = ${fmtCLP(multaCLP)}` : "$0") : "No se cobra"} </dd>
+          {(!esAbono || multaCLP > 0) && <><dt>Multa{esAbono ? " pendiente" : ""}</dt><dd>{c.multa?.cobrar ? (multa ? `${fmtMonto(multa, c.moneda)} = ${fmtCLP(multaCLP)}` : "$0") : "No se cobra"} </dd></>}
         </dl>
-        {c.multa?.cobrar && calcMulta(c, diasAtraso, f.periodo) > 0 && (
+        {esAbono && <div className="muted" style={{ marginTop: 8 }}>{total > 0 && total >= montoCLP + multaCLP ? "✅ Con este abono el mes queda pagado." : total > 0 ? `Quedará un saldo de ${fmtCLP(montoCLP + multaCLP - total)}.` : `Falta pagar ${fmtCLP(montoCLP + multaCLP)}${multaCLP ? " (renta + multa)" : ""}. El abono cubre primero la renta y luego la multa.`}</div>}
+        {!esAbono && c.multa?.cobrar && calcMulta(c, diasAtraso, f.periodo) > 0 && (
           <label className="switch" style={{ marginTop: 10 }} title={user.rol !== "dueno" ? "Solo el dueño puede condonar multas" : ""}>
             <input type="checkbox" checked={f.condonar} disabled={user.rol !== "dueno"} onChange={e => setF({ ...f, condonar: e.target.checked })} />
             Condonar multa de este mes {user.rol !== "dueno" && <span className="muted">(solo dueño)</span>}
@@ -1764,7 +1815,7 @@ function PagoModal({ p, u, onClose }) {
         )}
       </div>
       <div className="form-grid" style={{ marginTop: 14 }}>
-        <Campo label="Monto recibido (CLP)"><input className="input" type="number" value={ajuste ?? totalSugerido} onChange={e => setAjuste(e.target.value)} /></Campo>
+        <Campo label={esAbono ? "Monto del abono (CLP)" : "Monto recibido (CLP)"}><input className="input" type="number" value={ajuste ?? totalSugerido} onChange={e => setAjuste(e.target.value)} placeholder={esAbono ? "Ej: 500000" : ""} autoFocus={esAbono} /></Campo>
         <Campo label="Observación"><input className="input" value={f.obs} onChange={e => setF({ ...f, obs: e.target.value })} placeholder="N° de transferencia, etc." /></Campo>
       </div>
     </Modal>
@@ -1907,7 +1958,7 @@ function FichaDrawer({ propId, unidadId, onClose }) {
         </div>
       </div>
       {modal && modal.t === "editar" && <PropiedadForm inicial={p} onClose={() => setModal(null)} />}
-      {modal && modal.t === "pago" && <PagoModal p={p} u={u} onClose={() => setModal(null)} />}
+      {modal && modal.t === "pago" && <PagoModal p={p} u={u} modoInicial={modal.modo || "pago"} onClose={() => setModal(null)} />}
       {modal && modal.t === "comunicar" && <ComunicarModal p={p} u={u} inicial={modal.plantilla} onClose={() => setModal(null)} />}
       {modal && modal.t === "compartir" && <CompartirModal p={p} u={u} onClose={() => setModal(null)} />}
       {modal && modal.t === "doc" && <DocumentoModal p={p} u={u} tipoInicial={modal.tipo} onClose={() => setModal(null)} />}
@@ -1977,11 +2028,13 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
   };
 
   const borrarPago = pg => {
-    if (!confirm(`¿Eliminar el pago de ${nombrePeriodo(pg.periodo)}?`)) return;
+    const que = pg.esAbono ? `el abono de ${fmtCLP(pg.montoCLP)}` : "el pago";
+    if (!confirm(`¿Eliminar ${que} de ${nombrePeriodo(pg.periodo)}?`)) return;
     update(s => {
       const cc = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
-      cc.pagos = cc.pagos.filter(x => x.id !== pg.id);
-    }, `Eliminó el pago de ${nombrePeriodo(pg.periodo)} en "${nombreUnidad(p, u)}"`);
+      if (pg.esAbono) cc.abonos = (cc.abonos || []).filter(x => x.id !== pg.id);
+      else cc.pagos = cc.pagos.filter(x => x.id !== pg.id);
+    }, `Eliminó ${que} de ${nombrePeriodo(pg.periodo)} en "${nombreUnidad(p, u)}"`);
   };
 
   const tabs = c ? [["resumen", "Resumen"], ["arrendatario", "Arrendatario"], ["pagos", `Pagos${r.deudas.length ? " ⚠️" : ""}`], ["fotos", "Fotos"], ["inventario", `Inventario (${(u.inventario || []).length})`], ["docs", `Documentos (${docs.length})`]]
@@ -2104,15 +2157,22 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                   <b style={{ color: "#B91C1C" }}>Pendiente: {fmtCLP(r.deudaCLP)}</b>
                   <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "comunicar", plantilla: "atraso" })}>Enviar aviso de atraso</button>
                 </div>
-                {r.deudas.map(d => <div key={d.periodo} className="muted" style={{ marginTop: 4 }}>{nombrePeriodo(d.periodo)}: {fmtRenta(c)} · venció {fmtFecha(d.venc)} ({d.dias} días){d.multa ? ` · multa ${fmtMonto(d.multa, c.moneda)}` : ""}</div>)}
+                {r.deudas.map(d => <div key={d.periodo} className="muted" style={{ marginTop: 4 }}>{nombrePeriodo(d.periodo)}: {d.abonadoCLP ? `saldo ${fmtMonto(d.saldo, c.moneda)} (abonado ${fmtCLP(d.abonadoCLP)})` : fmtRenta(c)} · venció {fmtFecha(d.venc)} ({d.dias} días){d.multa ? ` · multa ${fmtMonto(d.multa, c.moneda)}` : ""}</div>)}
               </div>
             )}
-            {!(c.pagos || []).length ? <div className="empty">Sin pagos registrados.</div> : (
+            {puede(user, "pagos") && <div className="row">
+              <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "pago" })}>💵 Registrar pago</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "pago", modo: "abono" })}>Registrar abono</button>
+            </div>}
+            {!(c.pagos || []).length && !(c.abonos || []).length ? <div className="empty">Sin pagos registrados.</div> : (
               <div className="table-wrap"><table>
-                <thead><tr><th>Mes</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th>{esDueno && <th></th>}</tr></thead>
-                <tbody>{[...c.pagos].sort((x, y) => y.periodo.localeCompare(x.periodo)).map(pg => (
+                <thead><tr><th>Mes</th><th>Tipo</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th>{esDueno && <th></th>}</tr></thead>
+                <tbody>{[...(c.pagos || []), ...(c.abonos || []).map(a => ({ ...a, esAbono: true }))]
+                  .sort((x, y) => y.periodo.localeCompare(x.periodo) || (y.fecha || "").localeCompare(x.fecha || "")).map(pg => (
                   <tr key={pg.id} title={`Registró: ${pg.registradoPor}${pg.obs ? " · " + pg.obs : ""}`}>
-                    <td style={{ textTransform: "capitalize" }}>{nombrePeriodo(pg.periodo)}</td><td>{fmtFecha(pg.fecha)}</td>
+                    <td style={{ textTransform: "capitalize" }}>{nombrePeriodo(pg.periodo)}</td>
+                    <td>{pg.esAbono ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>Abono</span> : "Pago"}</td>
+                    <td>{fmtFecha(pg.fecha)}</td>
                     <td className="num">{fmtCLP(pg.montoCLP)}</td><td className="num">{pg.multaCLP ? fmtCLP(pg.multaCLP) : "—"}</td><td>{pg.metodo}</td>
                     {esDueno && <td><button className="icon-btn" style={{ fontSize: 13 }} onClick={() => borrarPago(pg)}>🗑</button></td>}
                   </tr>))}
@@ -2360,19 +2420,20 @@ function CobranzaView() {
                 <td><Badge estado={r.estado}>{r.estado === "atrasado" ? `Atrasado ${r.deudas[0].dias}d` : null}</Badge></td>
                 <td className="num">{fmtRenta(c)}</td>
                 <td className="num">{c.multa?.cobrar ? (r.multa ? fmtMonto(r.multa, c.moneda) : "$0") : <span className="muted">no cobra</span>}</td>
-                <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}</td>
+                <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}{r.abonosPendCLP > 0 && <div className="muted" style={{ fontWeight: 400 }}>abonado {fmtCLP(r.abonosPendCLP)}</div>}</td>
                 <td onClick={e => e.stopPropagation()}>
                   <div className="row" style={{ flexWrap: "nowrap" }}>
                     {puede(user, "pagos") && (r.estado === "pagado"
                       ? <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "pago", p, u })} title="Registrar el pago de un mes siguiente">Adelantar</button>
                       : <button className="btn btn-primary btn-sm" onClick={() => setModal({ t: "pago", p, u })}>Pagó</button>)}
+                    {puede(user, "pagos") && r.estado !== "pagado" && <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "abono", p, u })}>Abono</button>}
                     <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "com", p, u })}>Avisar</button>
                   </div>
                 </td>
               </tr>);
           })}</tbody></table></div>
       )}
-      {modal && modal.t === "pago" && <PagoModal p={modal.p} u={modal.u} onClose={() => setModal(null)} />}
+      {modal && (modal.t === "pago" || modal.t === "abono") && <PagoModal p={modal.p} u={modal.u} modoInicial={modal.t} onClose={() => setModal(null)} />}
       {modal && modal.t === "com" && <ComunicarModal p={modal.p} u={modal.u} onClose={() => setModal(null)} />}
     </div>
   );
@@ -2591,7 +2652,7 @@ const VISTAS = [
   { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloDueno: true },
   { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloDueno: true },
 ];
-const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "pagos", "documentos", "interesados", "miembros"];
+const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados", "miembros"];
 
 function Cargando({ texto = "Cargando…", error, onReintentar }) {
   return (
