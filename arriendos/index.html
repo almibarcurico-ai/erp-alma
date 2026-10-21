@@ -1397,8 +1397,13 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
       <div className="section-title row between">
         <span>Arriendo</span>
         <label className="switch" style={{ textTransform: "none", letterSpacing: 0, color: C.text, fontWeight: 500 }}>
-          <input type="checkbox" checked={!!c} onChange={e => upd("contrato", e.target.checked ? contratoVacio() : null)} />
-          {c ? "Ocupada (con contrato)" : "Desocupada"}
+          <input type="checkbox" checked={!!c} onChange={e => {
+            if (e.target.checked) return upd("contrato", contratoVacio());
+            const n = (c.pagos || []).length;
+            if (n && !confirm(`Se borrará este contrato y sus ${n} pagos registrados. Para dejar la propiedad libre conservando el historial, usa "Terminar contrato" en la ficha. ¿Borrar de todas formas?`)) return;
+            upd("contrato", null);
+          }} />
+          Ocupada (con contrato)
         </label>
       </div>
       {c && (
@@ -1432,7 +1437,7 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
               <div style={{ fontWeight: 700, fontSize: 13 }}>Multa por atraso</div>
               <label className="switch" title={esDueno ? "" : "Solo el dueño decide si se cobra la multa"}>
                 <input type="checkbox" checked={!!c.multa.cobrar} disabled={!esDueno} onChange={e => updM("cobrar", e.target.checked)} />
-                {c.multa.cobrar ? "Se cobra automáticamente" : "No se cobra"}
+                Cobrar multa automáticamente
               </label>
             </div>
             <div className="muted" style={{ margin: "4px 0 10px" }}>Según lo acordado en el contrato. Al vencer la fecha (más los días de gracia) la multa se suma sola a la deuda. {!esDueno && "Solo el dueño puede activarla o desactivarla."}</div>
