@@ -3073,6 +3073,13 @@ function WebCard() {
 // permiten leer todas las empresas y, según su rol, cambiar suscripciones, cobros y planes.
 const ESTADOS_SUS = { prueba: ["En prueba", "#A05A08", "#FFF7ED"], activa: ["Activa", "#0A7A3E", "#EDFAF3"], morosa: ["Morosa", "#B91C1C", "#FEF2F2"], suspendida: ["Suspendida", "#4A5878", "#F1F3F8"], cancelada: ["Cancelada", "#8A9EC0", "#F1F3F8"] };
 const mesActual = () => periodoDe(new Date());
+// Todas las suscripciones se cobran neto + IVA (19%). Los cobros guardan el total con IVA.
+const totalConIVA = neto => Math.round((Number(neto) || 0) * (1 + TASA_IVA));
+function MontoCobro({ c }) {
+  if (c.monto_clp == null) return <>{c.monto_uf} UF</>;
+  const neto = Math.round(c.monto_clp / (1 + TASA_IVA));
+  return <>{fmtCLP(c.monto_clp)}<div className="muted">neto {fmtCLP(neto)} + IVA {fmtCLP(c.monto_clp - neto)}</div></>;
+}
 
 function EstadoSus({ estado }) {
   const [t, color, bg] = ESTADOS_SUS[estado] || [estado || "—", C.muted, C.bg];
@@ -3135,7 +3142,6 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
   };
   const lista = d.emp.filter(e => !filtro || (filtro === "problemas" ? ["morosa", "suspendida"].includes(e.estado) : e.estado === filtro));
   const abiertaE = abierta && d.emp.find(e => e.id === abierta);
-  const miembroDe = id => empresas.some(m => m.empresa_id === id);
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg }}>
@@ -3151,9 +3157,9 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
       <div className="grid fade-up" style={{ gap: 16, maxWidth: 1240, margin: "0 auto", padding: 24 }}>
         <div className="grid g4">
           <Kpi label="Inmobiliarias" valor={kpi.total} sub={`${kpi.activas} pagando · ${kpi.prueba} en prueba`} icono="🏢" />
-          <Kpi label="Ingreso mensual (MRR)" valor={fmtCLP(kpi.mrr)} sub={`neto · ARR ${fmtCLP(kpi.mrr * 12)}`} icono="💰" color={C.success} />
-          <Kpi label="En prueba (potencial)" valor={fmtCLP(kpi.potencial)} sub="si todas pasan a pagar" icono="⏳" />
-          <Kpi label="Por cobrar" valor={fmtCLP(kpi.porCobrar)} sub={`${kpi.problemas} morosas o suspendidas · ${kpi.unidades} unidades`} icono="⚠️" color={kpi.porCobrar ? "#DC2626" : null} />
+          <Kpi label="Ingreso mensual (MRR)" valor={fmtCLP(kpi.mrr)} sub={`neto + IVA · con IVA ${fmtCLP(totalConIVA(kpi.mrr))} · ARR neto ${fmtCLP(kpi.mrr * 12)}`} icono="💰" color={C.success} />
+          <Kpi label="En prueba (potencial)" valor={fmtCLP(kpi.potencial)} sub={`neto + IVA (${fmtCLP(totalConIVA(kpi.potencial))} con IVA) si todas pasan a pagar`} icono="⏳" />
+          <Kpi label="Por cobrar (con IVA)" valor={fmtCLP(kpi.porCobrar)} sub={`${kpi.problemas} morosas o suspendidas · ${kpi.unidades} unidades`} icono="⚠️" color={kpi.porCobrar ? "#DC2626" : null} />
         </div>
         <div className="tabs">
           {[["empresas", `Inmobiliarias (${d.emp.length})`], ["planes", "Planes y precios"], ["cobros", "Cobros"], ["bitacora", "Bitácora"]].map(([k, l]) =>
@@ -3167,7 +3173,7 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
           </div>
           {!lista.length ? <div className="card empty">No hay inmobiliarias con ese filtro.</div> : (
             <div className="table-wrap"><table>
-              <thead><tr><th>Inmobiliaria</th><th>Plan</th><th>Estado</th><th className="num">Unidades</th><th className="num">Usuarios</th><th className="num">Mensual</th><th>Próximo evento</th><th className="num">Por cobrar</th><th>Última actividad</th><th></th></tr></thead>
+              <thead><tr><th>Inmobiliaria</th><th>Plan</th><th>Estado</th><th className="num">Unidades</th><th className="num">Usuarios</th><th className="num">Mensual + IVA</th><th>Próximo evento</th><th className="num">Por cobrar</th><th>Última actividad</th><th></th></tr></thead>
               <tbody>{lista.map(e => {
                 const pl = d.planes.find(p => p.id === e.plan_id);
                 const ev = e.estado === "prueba" && e.prueba_hasta ? `Prueba termina ${fmtFecha(e.prueba_hasta)}` : e.vigente_hasta ? `Vence ${fmtFecha(e.vigente_hasta)}` : "—";
@@ -3182,7 +3188,7 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
                     <td>{ev}</td>
                     <td className="num" style={{ color: pendienteDe(e.id) ? "#DC2626" : null }}>{pendienteDe(e.id) ? fmtCLP(pendienteDe(e.id)) : "—"}</td>
                     <td>{e.ultima_actividad ? fmtFecha(e.ultima_actividad.slice(0, 10)) : "—"}</td>
-                    <td><button className="btn btn-ghost btn-sm">Administrar</button></td>
+                    <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-ghost btn-sm">Administrar</button>{puede(["super_admin", "soporte"]) && <> <button className="btn btn-ghost btn-sm" title="Entrar como soporte" onClick={x => { x.stopPropagation(); onVer(e.id); }}>🛟 Entrar</button></>}</td>
                   </tr>);
               })}</tbody>
             </table></div>
@@ -3198,18 +3204,18 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
           </div>
         )}
       </div>
-      {abiertaE && <EmpresaAdmin e={abiertaE} d={d} puede={puede} accion={accion} miembro={miembroDe(abiertaE.id)} onVer={() => onVer(abiertaE.id)} onClose={() => setAbierta(null)} />}
+      {abiertaE && <EmpresaAdmin e={abiertaE} d={d} puede={puede} accion={accion} onVer={() => onVer(abiertaE.id)} onClose={() => setAbierta(null)} />}
       {aviso && <div className="toast">{aviso}</div>}
     </div>
   );
 }
 
-function EmpresaAdmin({ e, d, puede, accion, miembro, onVer, onClose }) {
+function EmpresaAdmin({ e, d, puede, accion, onVer, onClose }) {
   const s = d.subs.find(x => x.empresa_id === e.id);
   const [f, setF] = useState(() => ({ plan_id: s?.plan_id || "corredor", estado: s?.estado || "prueba", ciclo: s?.ciclo || "mensual", precio: s?.precio_clp_pactado ?? "", prueba_hasta: s?.prueba_hasta || "", vigente_hasta: s?.vigente_hasta || "" }));
   const pl = d.planes.find(p => p.id === f.plan_id);
   const precio = f.precio === "" ? pl?.precio_clp || 0 : Number(f.precio) || 0;
-  const [cobro, setCobro] = useState(() => ({ periodo: mesActual(), monto: Math.round(precio * (f.ciclo === "anual" ? 10 : 1) * 1.19), pagado: true, pagado_en: toISO(new Date()), medio: "Transferencia" }));
+  const [cobro, setCobro] = useState(() => ({ periodo: mesActual(), neto: precio * (f.ciclo === "anual" ? 10 : 1), pagado: true, pagado_en: toISO(new Date()), medio: "Transferencia" }));
   const cobros = d.cobros.filter(c => c.empresa_id === e.id);
   const equipo = d.miembros.filter(m => m.empresa_id === e.id);
   const set = (k, v) => setF(x => ({ ...x, [k]: v }));
@@ -3225,11 +3231,11 @@ function EmpresaAdmin({ e, d, puede, accion, miembro, onVer, onClose }) {
   // Pago recibido: si había prueba o mora, la suscripción pasa a activa y se extiende la vigencia
   const registrarCobro = async () => {
     if (!/^\d{4}-\d{2}$/.test(cobro.periodo)) return alert("Período inválido (AAAA-MM)");
-    if (!(Number(cobro.monto) > 0)) return alert("Indica el monto");
+    if (!(Number(cobro.neto) > 0)) return alert("Indica el monto neto");
     const ok = await accion(() => q(sb.from("cobros_suscripcion").upsert({
-      empresa_id: e.id, periodo: cobro.periodo, monto_clp: Math.round(Number(cobro.monto)), estado: cobro.pagado ? "pagado" : "pendiente",
+      empresa_id: e.id, periodo: cobro.periodo, monto_clp: totalConIVA(cobro.neto), estado: cobro.pagado ? "pagado" : "pendiente",
       pagado_en: cobro.pagado ? cobro.pagado_en || toISO(new Date()) : null, medio: cobro.medio || null,
-    }, { onConflict: "empresa_id,periodo" })), "Cobro registrado", `Cobro ${cobro.periodo} de ${e.nombre}: ${fmtCLP(cobro.monto)} ${cobro.pagado ? "pagado" : "pendiente"}`);
+    }, { onConflict: "empresa_id,periodo" })), "Cobro registrado", `Cobro ${cobro.periodo} de ${e.nombre}: ${fmtCLP(totalConIVA(cobro.neto))} con IVA ${cobro.pagado ? "pagado" : "pendiente"}`);
     if (ok && cobro.pagado && s && ["prueba", "morosa"].includes(s.estado) && confirm("¿Dejar la suscripción como Activa?")) {
       const hasta = vencimiento(sumarMes(cobro.periodo, f.ciclo === "anual" ? 12 : 1), 1);
       accion(() => q(sb.from("suscripciones").update({ estado: "activa", vigente_hasta: toISO(hasta), actualizado: new Date().toISOString() }).eq("empresa_id", e.id)),
@@ -3241,7 +3247,7 @@ function EmpresaAdmin({ e, d, puede, accion, miembro, onVer, onClose }) {
 
   return (
     <Modal titulo={e.nombre} onClose={onClose} ancho={900}
-      pie={<>{miembro && <button className="btn btn-ghost" onClick={onVer}>Entrar a la empresa ›</button>}<button className="btn btn-ghost" onClick={onClose}>Cerrar</button></>}>
+      pie={<>{puede(["super_admin", "soporte"]) && <button className="btn btn-primary" onClick={onVer}>🛟 Entrar como soporte ›</button>}<button className="btn btn-ghost" onClick={onClose}>Cerrar</button></>}>
       <div className="row" style={{ marginBottom: 12 }}>
         <EstadoSus estado={s?.estado} />
         <span className="muted">{[e.rut, e.email, e.telefono].filter(Boolean).join(" · ")} · alta {fmtFecha(e.creado.slice(0, 10))}</span>
@@ -3274,10 +3280,10 @@ function EmpresaAdmin({ e, d, puede, accion, miembro, onVer, onClose }) {
       <div className="section-title">Cobros de la suscripción</div>
       {!cobros.length ? <div className="muted" style={{ marginBottom: 10 }}>Sin cobros registrados.</div> : (
         <div className="table-wrap" style={{ marginBottom: 10 }}><table>
-          <thead><tr><th>Período</th><th className="num">Monto</th><th>Estado</th><th>Pagado</th><th>Medio</th><th></th></tr></thead>
+          <thead><tr><th>Período</th><th className="num">Total con IVA</th><th>Estado</th><th>Pagado</th><th>Medio</th><th></th></tr></thead>
           <tbody>{cobros.map(c => (
             <tr key={c.id}>
-              <td>{c.periodo}</td><td className="num">{c.monto_clp != null ? fmtCLP(c.monto_clp) : `${c.monto_uf} UF`}</td>
+              <td>{c.periodo}</td><td className="num"><MontoCobro c={c} /></td>
               <td><span className="tag" style={{ background: c.estado === "pagado" ? C.successBg : c.estado === "pendiente" ? "#FEF2F2" : C.bg, color: c.estado === "pagado" ? C.success : c.estado === "pendiente" ? "#B91C1C" : C.muted }}>{c.estado}</span></td>
               <td>{fmtFecha(c.pagado_en)}</td><td className="muted">{c.medio || ""}</td>
               <td>{puede(["super_admin", "contabilidad"]) && <div className="row" style={{ flexWrap: "nowrap" }}>
@@ -3291,7 +3297,8 @@ function EmpresaAdmin({ e, d, puede, accion, miembro, onVer, onClose }) {
         <div className="card" style={{ padding: 14, background: C.bg }}>
           <div className="form-grid">
             <Campo label="Período (AAAA-MM)"><input className="input" value={cobro.periodo} onChange={x => setCobro({ ...cobro, periodo: x.target.value })} /></Campo>
-            <Campo label="Monto con IVA ($)"><input className="input" type="number" min="1" value={cobro.monto} onChange={x => setCobro({ ...cobro, monto: x.target.value })} /></Campo>
+            <Campo label="Monto neto ($)"><input className="input" type="number" min="1" value={cobro.neto} onChange={x => setCobro({ ...cobro, neto: x.target.value })} /></Campo>
+            <Campo label="Total a cobrar"><div style={{ padding: "9px 0", fontWeight: 700 }}>{fmtCLP(totalConIVA(cobro.neto))} <span className="muted" style={{ fontWeight: 400 }}>= neto + IVA {fmtCLP(totalConIVA(cobro.neto) - Math.round(Number(cobro.neto) || 0))}</span></div></Campo>
             <Campo label="Pagado el"><input className="input" type="date" value={cobro.pagado_en} disabled={!cobro.pagado} onChange={x => setCobro({ ...cobro, pagado_en: x.target.value })} /></Campo>
             <Campo label="Medio"><input className="input" value={cobro.medio} onChange={x => setCobro({ ...cobro, medio: x.target.value })} /></Campo>
           </div>
@@ -3351,14 +3358,14 @@ function CobrosAdmin({ d, editable, accion }) {
     <div className="grid" style={{ gap: 12 }}>
       <div className="row between">
         <select className="select" style={{ width: 180 }} value={periodo} onChange={x => setPeriodo(x.target.value)}>{meses.map(m => <option key={m} value={m}>{nombrePeriodo(m)}</option>)}</select>
-        <div className="muted">Pagado {fmtCLP(totalPagado)} · pendiente {fmtCLP(totalPend)}</div>
+        <div className="muted">Con IVA: pagado {fmtCLP(totalPagado)} · pendiente {fmtCLP(totalPend)}</div>
       </div>
       {sinCobro.length > 0 && <div className="card" style={{ padding: 12, background: C.warningBg, fontSize: 13 }}>Sin cobro registrado en {nombrePeriodo(periodo)}: <b>{sinCobro.map(e => e.nombre).join(", ")}</b>. Regístralo desde la ficha de cada inmobiliaria.</div>}
       {!delMes.length ? <div className="card empty">Sin cobros en {nombrePeriodo(periodo)}.</div> : (
         <div className="table-wrap"><table>
-          <thead><tr><th>Inmobiliaria</th><th className="num">Monto</th><th>Estado</th><th>Pagado</th><th>Medio</th><th></th></tr></thead>
+          <thead><tr><th>Inmobiliaria</th><th className="num">Total con IVA</th><th>Estado</th><th>Pagado</th><th>Medio</th><th></th></tr></thead>
           <tbody>{delMes.map(c => (
-            <tr key={c.id}><td style={{ fontWeight: 600 }}>{nombre(c.empresa_id)}</td><td className="num">{c.monto_clp != null ? fmtCLP(c.monto_clp) : `${c.monto_uf} UF`}</td>
+            <tr key={c.id}><td style={{ fontWeight: 600 }}>{nombre(c.empresa_id)}</td><td className="num"><MontoCobro c={c} /></td>
               <td>{c.estado}</td><td>{fmtFecha(c.pagado_en)}</td><td className="muted">{c.medio || ""}</td>
               <td>{editable && c.estado === "pendiente" && <button className="btn btn-primary btn-sm" onClick={() => accion(() => q(sb.from("cobros_suscripcion").update({ estado: "pagado", pagado_en: toISO(new Date()) }).eq("id", c.id)), "Cobro pagado", `Cobro ${c.periodo} de ${nombre(c.empresa_id)} marcado pagado`)}>Pagado</button>}</td>
             </tr>))}</tbody>
@@ -3538,6 +3545,9 @@ function App() {
   const [esAdmin, setEsAdmin] = useState(false);
   const [empresaId, setEmpresaId] = useState(null);
   const [plataforma, setPlataforma] = useState(() => location.hash === "#plataforma");
+  // Soporte HM: admin de plataforma dentro de una inmobiliaria, con los permisos del dueño y sin ser miembro
+  const [soporte, setSoporte] = useState(false);
+  const [rolAdmin, setRolAdmin] = useState(null);
   const [st, setSt] = useState(null);
   const [error, setError] = useState("");
   const [intento, setIntento] = useState(0);
@@ -3572,10 +3582,12 @@ function App() {
       q(sb.from("admins_plataforma").select("rol").eq("user_id", uidSesion).maybeSingle()),
     ]);
     const activas = ms.filter(m => m.activo);
-    setEsAdmin(!!adm); setEmpresas(activas);
+    setEsAdmin(!!adm); setRolAdmin(adm ? adm.rol : null); setEmpresas(activas);
+    const enSoporte = adm && ["super_admin", "soporte"].includes(adm.rol) ? local.get("qipo-soporte") : null;
+    if (enSoporte) { setSoporte(true); setEmpresaId(enSoporte); return; }
     const guardada = local.get("qipo-empresa");
     const elegida = activas.find(m => m.empresa_id === guardada) || (activas.length === 1 ? activas[0] : null);
-    setEmpresaId(elegida ? elegida.empresa_id : null);
+    setSoporte(false); setEmpresaId(elegida ? elegida.empresa_id : null);
   }, [uidSesion]);
 
   useEffect(() => {
@@ -3597,7 +3609,7 @@ function App() {
 
   useEffect(() => {
     if (!empresaId) return;
-    local.set("qipo-empresa", empresaId);
+    if (!soporte) local.set("qipo-empresa", empresaId);
     setSt(null); recargar();
     const canalVivo = sb.channel("empresa-" + empresaId);
     TABLAS_EN_VIVO.forEach(t => canalVivo.on("postgres_changes", { event: "*", schema: "public", table: t, filter: `empresa_id=eq.${empresaId}` }, programarRecarga));
@@ -3607,6 +3619,7 @@ function App() {
   }, [empresaId]);
 
   const user = st && uidSesion && (() => {
+    if (soporte) return { id: uidSesion, nombre: `Soporte HM · ${(sesionSb.user.user_metadata || {}).nombre || sesionSb.user.email}`, rol: "dueno", soporte: true, activo: true, email: sesionSb.user.email };
     const m = st.usuarios.find(u => u.id === uidSesion && u.activo !== false);
     return m ? { ...m, email: sesionSb.user.email } : null;
   })();
@@ -3648,7 +3661,7 @@ function App() {
   if (!empresas) return <><style>{css}</style><Cargando /></>;
   const irPlataforma = v => { setPlataforma(v); history.replaceState(null, "", v ? "#plataforma" : location.pathname + location.search); };
   if (esAdmin && plataforma) return <><style>{css}</style><PlataformaView sesionSb={sesionSb} empresas={empresas}
-    onVer={id => { irPlataforma(false); setFicha(null); setEmpresaId(id); }} onSalir={() => irPlataforma(false)} /></>;
+    onVer={id => { local.set("qipo-soporte", id); setSoporte(true); setVista("panel"); setFicha(null); if (id !== empresaId) setSt(null); setEmpresaId(id); irPlataforma(false); }} onSalir={() => irPlataforma(false)} /></>;
   if (!empresaId) return <><style>{css}</style><Bienvenida sesionSb={sesionSb} empresas={empresas} esAdmin={esAdmin} onPlataforma={() => irPlataforma(true)}
     onElegir={setEmpresaId} onCreada={id => { local.set("qipo-empresa", id); setIntento(i => i + 1); }} /></>;
   if (!st) return <><style>{css}</style><Cargando texto="Cargando propiedades…" /></>;
@@ -3689,9 +3702,9 @@ function App() {
           ))}
           <div style={{ marginTop: "auto", padding: "12px 8px 0", borderTop: "1px solid rgba(255,255,255,.08)" }}>
             <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{user.nombre}</div>
-            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{user.rol === "dueno" ? "Dueño" : "Secretaria"}{esAdmin ? " · admin HM" : ""}</div>
+            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{soporte ? "Soporte HM (sin ocupar cupo)" : (user.rol === "dueno" ? "Dueño" : "Secretaria") + (esAdmin ? " · admin HM" : "")}</div>
             {esAdmin && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { setFicha(null); irPlataforma(true); }}>🛰️ Panel de plataforma</button>}
-            {empresas.length > 1 && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("qipo-empresa", null); setFicha(null); setEmpresaId(null); }}>⇄ Cambiar empresa</button>}
+            {(empresas.length > 1 || soporte) && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("qipo-empresa", null); local.set("qipo-soporte", null); setSoporte(false); setFicha(null); setEmpresaId(null); }}>{soporte ? "↩ Salir del modo soporte" : "⇄ Cambiar empresa"}</button>}
             <button className="nav-item" style={{ paddingLeft: 0 }} onClick={salir}>↩ Cerrar sesión</button>
           </div>
         </aside>
@@ -3707,6 +3720,12 @@ function App() {
               {atrasados > 0 && <button className="tag" style={{ background: EST.atrasado.bg, color: EST.atrasado.color, border: "none", cursor: "pointer" }} onClick={() => setVista("cobranza")}>⚠️ {atrasados} atrasado{atrasados > 1 ? "s" : ""}</button>}
             </div>
           </div>
+          {soporte && (
+            <div className="row between" style={{ padding: "8px 24px", fontSize: 12.5, background: "#EEF2FF", color: "#3730A3", borderBottom: `1px solid ${C.border}` }}>
+              <span>🛟 <b>Modo soporte</b> en {st.empresa.nombre}: ves y haces lo mismo que el dueño. Tus cambios quedan en su bitácora como “Soporte HM”.</span>
+              <button className="btn btn-sm" style={{ background: "#fff" }} onClick={() => { setFicha(null); irPlataforma(true); }}>🛰️ Volver a plataforma</button>
+            </div>
+          )}
           {sus && sus.estado !== "activa" && (
             <div style={{ padding: "8px 24px", fontSize: 12.5, background: bloqueada ? EST.atrasado.bg : sus.estado === "morosa" ? C.warningBg : C.infoBg, color: bloqueada ? "#B91C1C" : sus.estado === "morosa" ? C.warning : C.info, borderBottom: `1px solid ${C.border}` }}>
               {bloqueada ? "Suscripción suspendida: puedes ver tus datos, pero no modificarlos. Contacta a HM Software para reactivarla."
