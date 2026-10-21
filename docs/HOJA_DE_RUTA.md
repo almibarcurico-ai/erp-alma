@@ -11,7 +11,7 @@ Estados: ✅ hecho · 🟡 parcial · ⬜ pendiente
 | Área | Estado | Qué hay |
 |---|---|---|
 | Multiempresa | 🟡 | empresas, miembros, invitaciones, RLS por empresa, planes con límite de unidades validado en la base |
-| Superadmin (Torre de Control HM) | 🟡 | vista `torre_empresas` y `admins_plataforma` en la base; falta la interfaz |
+| Superadmin (Torre de Control HM) | ✅ | panel de plataforma en la app (`#plataforma`): inmobiliarias, MRR, suscripciones, cobros, planes y bitácora; resumen también en la Torre de Control (hm-panel) |
 | Roles | 🟡 | dueño y secretaria |
 | Propiedades | 🟡 | propiedades y unidades (locales), mapa, fotos, servicios (luz, agua, gastos comunes), inventario con fotos |
 | Arriendos y cobranza | 🟡 | contratos UF/CLP, día de pago, pagos, abonos, multas opcionales, IVA opcional, reajuste % cada N meses |

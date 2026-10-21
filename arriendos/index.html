@@ -1189,7 +1189,7 @@ function NuevaClave({ onListo }) {
   );
 }
 
-function Bienvenida({ sesionSb, empresas, esAdmin, onElegir, onCreada }) {
+function Bienvenida({ sesionSb, empresas, esAdmin, onPlataforma, onElegir, onCreada }) {
   const [f, setF] = useState({ empresa: "", rut: "", nombre: (sesionSb.user.user_metadata || {}).nombre || "" });
   const [error, setError] = useState("");
   const [creando, setCreando] = useState(!empresas.length);
@@ -1202,6 +1202,7 @@ function Bienvenida({ sesionSb, empresas, esAdmin, onElegir, onCreada }) {
   return (
     <PantallaCentrada ancho={460}>
       <div className="muted" style={{ marginBottom: 16 }}>Hola {f.nombre || sesionSb.user.email}{esAdmin ? " · administrador de plataforma" : ""}</div>
+      {esAdmin && <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginBottom: 16 }} onClick={onPlataforma}>🛰️ Panel de plataforma (SaaS)</button>}
       {!creando ? (
         <div className="grid" style={{ gap: 8 }}>
           <div className="label">Elige la empresa</div>
@@ -3067,6 +3068,306 @@ function WebCard() {
   );
 }
 
+// ─── PANEL DE PLATAFORMA (SaaS) ───────────────────────────────────────────────
+// Solo para administradores de plataforma (tabla admins_plataforma). Las políticas RLS ya les
+// permiten leer todas las empresas y, según su rol, cambiar suscripciones, cobros y planes.
+const ESTADOS_SUS = { prueba: ["En prueba", "#A05A08", "#FFF7ED"], activa: ["Activa", "#0A7A3E", "#EDFAF3"], morosa: ["Morosa", "#B91C1C", "#FEF2F2"], suspendida: ["Suspendida", "#4A5878", "#F1F3F8"], cancelada: ["Cancelada", "#8A9EC0", "#F1F3F8"] };
+const mesActual = () => periodoDe(new Date());
+
+function EstadoSus({ estado }) {
+  const [t, color, bg] = ESTADOS_SUS[estado] || [estado || "—", C.muted, C.bg];
+  return <span className="tag" style={{ background: bg, color, border: `1px solid ${color}33` }}>{t}</span>;
+}
+
+function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
+  const [d, setD] = useState(null);
+  const [tab, setTab] = useState("empresas");
+  const [filtro, setFiltro] = useState("");
+  const [abierta, setAbierta] = useState(null);
+  const [aviso, setAviso] = useState("");
+  const [error, setError] = useState("");
+  const toast = m => { setAviso(m); clearTimeout(window.__tp); window.__tp = setTimeout(() => setAviso(""), 3800); };
+
+  const cargar = useCallback(async () => {
+    try {
+      const [rol, emp, subs, planes, cobros, miembros, bit] = await Promise.all([
+        q(sb.from("admins_plataforma").select("rol").eq("user_id", sesionSb.user.id).maybeSingle()),
+        q(sb.from("torre_empresas").select("*").order("creado", { ascending: false })),
+        q(sb.from("suscripciones").select("*")),
+        q(sb.from("planes").select("*").order("orden")),
+        q(sb.from("cobros_suscripcion").select("*").order("periodo", { ascending: false }).limit(500)),
+        q(sb.from("miembros").select("empresa_id, nombre, rol, activo")),
+        q(sb.from("bitacora").select("creado, usuario, accion, empresa_id").is("empresa_id", null).order("creado", { ascending: false }).limit(50)),
+      ]);
+      setD({ rol: rol && rol.rol, emp, subs, planes, cobros, miembros, bit });
+      setError("");
+    } catch (e) { setError(mensajeError(e)); }
+  }, [sesionSb.user.id]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  // Toda acción queda en la bitácora de plataforma (empresa_id nulo)
+  const accion = async (fn, ok, registro) => {
+    try {
+      await fn();
+      await q(sb.from("bitacora").insert({ empresa_id: null, user_id: sesionSb.user.id, usuario: sesionSb.user.email, accion: registro }));
+      toast(ok); await cargar(); return true;
+    } catch (e) { toast(mensajeError(e)); return false; }
+  };
+
+  if (error) return <PantallaCentrada><div style={{ color: "#B91C1C", margin: "12px 0" }}>{error}</div><button className="btn btn-ghost" onClick={onSalir}>‹ Volver</button></PantallaCentrada>;
+  if (!d) return <Cargando texto="Cargando plataforma…" />;
+
+  const puede = roles => roles.includes(d.rol);
+  const susDe = id => d.subs.find(s => s.empresa_id === id);
+  const usuariosDe = id => d.miembros.filter(m => m.empresa_id === id && m.activo).length;
+  const pendienteDe = id => d.cobros.filter(c => c.empresa_id === id && c.estado === "pendiente").reduce((t, c) => t + (c.monto_clp || 0), 0);
+  const precioDe = e => { const s = susDe(e.id); const p = s && d.planes.find(x => x.id === s.plan_id); return s ? s.precio_clp_pactado ?? (p && p.precio_clp) ?? 0 : 0; };
+  const vivas = d.emp.filter(e => e.estado !== "cancelada");
+  const kpi = {
+    total: vivas.length,
+    activas: vivas.filter(e => e.estado === "activa").length,
+    prueba: vivas.filter(e => e.estado === "prueba").length,
+    problemas: vivas.filter(e => ["morosa", "suspendida"].includes(e.estado)).length,
+    mrr: vivas.filter(e => e.estado === "activa").reduce((t, e) => t + precioDe(e), 0),
+    potencial: vivas.filter(e => e.estado === "prueba").reduce((t, e) => t + precioDe(e), 0),
+    porCobrar: d.cobros.filter(c => c.estado === "pendiente").reduce((t, c) => t + (c.monto_clp || 0), 0),
+    unidades: vivas.reduce((t, e) => t + Number(e.unidades || 0), 0),
+  };
+  const lista = d.emp.filter(e => !filtro || (filtro === "problemas" ? ["morosa", "suspendida"].includes(e.estado) : e.estado === filtro));
+  const abiertaE = abierta && d.emp.find(e => e.id === abierta);
+  const miembroDe = id => empresas.some(m => m.empresa_id === id);
+
+  return (
+    <div style={{ minHeight: "100vh", background: C.bg }}>
+      <div style={{ background: C.sidebar, color: "#fff", padding: "14px 24px" }}>
+        <div className="row between" style={{ maxWidth: 1240, margin: "0 auto" }}>
+          <div className="row"><span style={{ fontSize: 20 }}>🛰️</span><div><div style={{ fontWeight: 800 }}>Qipo Arriendos · Plataforma</div><div style={{ fontSize: 11.5, opacity: .6 }}>{sesionSb.user.email} · {({ super_admin: "Super administrador", contabilidad: "Contabilidad", soporte: "Soporte" })[d.rol] || d.rol}</div></div></div>
+          <div className="row">
+            <button className="btn btn-sm" style={{ background: "rgba(255,255,255,.1)", color: "#fff", border: "1px solid rgba(255,255,255,.2)" }} onClick={cargar}>↻ Actualizar</button>
+            <button className="btn btn-sm" style={{ background: "rgba(255,255,255,.1)", color: "#fff", border: "1px solid rgba(255,255,255,.2)" }} onClick={onSalir}>{empresas.length ? "‹ Mis empresas" : "‹ Salir"}</button>
+          </div>
+        </div>
+      </div>
+      <div className="grid fade-up" style={{ gap: 16, maxWidth: 1240, margin: "0 auto", padding: 24 }}>
+        <div className="grid g4">
+          <Kpi label="Inmobiliarias" valor={kpi.total} sub={`${kpi.activas} pagando · ${kpi.prueba} en prueba`} icono="🏢" />
+          <Kpi label="Ingreso mensual (MRR)" valor={fmtCLP(kpi.mrr)} sub={`neto · ARR ${fmtCLP(kpi.mrr * 12)}`} icono="💰" color={C.success} />
+          <Kpi label="En prueba (potencial)" valor={fmtCLP(kpi.potencial)} sub="si todas pasan a pagar" icono="⏳" />
+          <Kpi label="Por cobrar" valor={fmtCLP(kpi.porCobrar)} sub={`${kpi.problemas} morosas o suspendidas · ${kpi.unidades} unidades`} icono="⚠️" color={kpi.porCobrar ? "#DC2626" : null} />
+        </div>
+        <div className="tabs">
+          {[["empresas", `Inmobiliarias (${d.emp.length})`], ["planes", "Planes y precios"], ["cobros", "Cobros"], ["bitacora", "Bitácora"]].map(([k, l]) =>
+            <button key={k} className={"tab" + (tab === k ? " active" : "")} onClick={() => setTab(k)}>{l}</button>)}
+        </div>
+
+        {tab === "empresas" && <>
+          <div className="row">
+            {[["", "Todas"], ["prueba", "En prueba"], ["activa", "Activas"], ["problemas", "Morosas o suspendidas"], ["cancelada", "Canceladas"]].map(([k, l]) =>
+              <button key={k} className={"btn btn-sm " + (filtro === k ? "btn-primary" : "btn-ghost")} onClick={() => setFiltro(k)}>{l}</button>)}
+          </div>
+          {!lista.length ? <div className="card empty">No hay inmobiliarias con ese filtro.</div> : (
+            <div className="table-wrap"><table>
+              <thead><tr><th>Inmobiliaria</th><th>Plan</th><th>Estado</th><th className="num">Unidades</th><th className="num">Usuarios</th><th className="num">Mensual</th><th>Próximo evento</th><th className="num">Por cobrar</th><th>Última actividad</th><th></th></tr></thead>
+              <tbody>{lista.map(e => {
+                const pl = d.planes.find(p => p.id === e.plan_id);
+                const ev = e.estado === "prueba" && e.prueba_hasta ? `Prueba termina ${fmtFecha(e.prueba_hasta)}` : e.vigente_hasta ? `Vence ${fmtFecha(e.vigente_hasta)}` : "—";
+                return (
+                  <tr key={e.id} className="click" onClick={() => setAbierta(e.id)}>
+                    <td style={{ fontWeight: 600 }}>{e.nombre}<div className="muted">{[e.rut, e.email].filter(Boolean).join(" · ") || `alta ${fmtFecha(e.creado.slice(0, 10))}`}</div></td>
+                    <td>{e.plan || "—"}{susDe(e.id)?.ciclo === "anual" ? <div className="muted">anual</div> : null}</td>
+                    <td><EstadoSus estado={e.estado} /></td>
+                    <td className="num">{e.unidades}{pl && pl.max_unidades ? ` / ${pl.max_unidades}` : ""}<div className="muted">{e.ocupadas} arrendadas</div></td>
+                    <td className="num">{usuariosDe(e.id)}{pl && pl.max_usuarios ? ` / ${pl.max_usuarios}` : ""}</td>
+                    <td className="num">{fmtCLP(precioDe(e))}{susDe(e.id)?.precio_clp_pactado != null ? <div className="muted">pactado</div> : null}</td>
+                    <td>{ev}</td>
+                    <td className="num" style={{ color: pendienteDe(e.id) ? "#DC2626" : null }}>{pendienteDe(e.id) ? fmtCLP(pendienteDe(e.id)) : "—"}</td>
+                    <td>{e.ultima_actividad ? fmtFecha(e.ultima_actividad.slice(0, 10)) : "—"}</td>
+                    <td><button className="btn btn-ghost btn-sm">Administrar</button></td>
+                  </tr>);
+              })}</tbody>
+            </table></div>
+          )}
+        </>}
+
+        {tab === "planes" && <PlanesAdmin planes={d.planes} editable={puede(["super_admin"])} accion={accion} />}
+        {tab === "cobros" && <CobrosAdmin d={d} editable={puede(["super_admin", "contabilidad"])} accion={accion} />}
+        {tab === "bitacora" && (
+          <div className="card">
+            {!d.bit.length ? <div className="muted">Sin acciones de plataforma registradas.</div> : d.bit.map((b, i) =>
+              <div key={i} style={{ padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 13 }}><span className="muted">{fmtFecha(b.creado.slice(0, 10))} {b.creado.slice(11, 16)} · {b.usuario}</span><div>{b.accion}</div></div>)}
+          </div>
+        )}
+      </div>
+      {abiertaE && <EmpresaAdmin e={abiertaE} d={d} puede={puede} accion={accion} miembro={miembroDe(abiertaE.id)} onVer={() => onVer(abiertaE.id)} onClose={() => setAbierta(null)} />}
+      {aviso && <div className="toast">{aviso}</div>}
+    </div>
+  );
+}
+
+function EmpresaAdmin({ e, d, puede, accion, miembro, onVer, onClose }) {
+  const s = d.subs.find(x => x.empresa_id === e.id);
+  const [f, setF] = useState(() => ({ plan_id: s?.plan_id || "corredor", estado: s?.estado || "prueba", ciclo: s?.ciclo || "mensual", precio: s?.precio_clp_pactado ?? "", prueba_hasta: s?.prueba_hasta || "", vigente_hasta: s?.vigente_hasta || "" }));
+  const pl = d.planes.find(p => p.id === f.plan_id);
+  const precio = f.precio === "" ? pl?.precio_clp || 0 : Number(f.precio) || 0;
+  const [cobro, setCobro] = useState(() => ({ periodo: mesActual(), monto: Math.round(precio * (f.ciclo === "anual" ? 10 : 1) * 1.19), pagado: true, pagado_en: toISO(new Date()), medio: "Transferencia" }));
+  const cobros = d.cobros.filter(c => c.empresa_id === e.id);
+  const equipo = d.miembros.filter(m => m.empresa_id === e.id);
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+
+  const guardar = () => accion(() => q(sb.from("suscripciones").update({
+    plan_id: f.plan_id, estado: f.estado, ciclo: f.ciclo, precio_clp_pactado: f.precio === "" ? null : Math.round(Number(f.precio)),
+    prueba_hasta: f.prueba_hasta || null, vigente_hasta: f.vigente_hasta || null, actualizado: new Date().toISOString(),
+  }).eq("empresa_id", e.id)), "Suscripción actualizada", `Suscripción de ${e.nombre}: ${f.plan_id}, ${f.estado}${f.precio !== "" ? `, precio pactado ${fmtCLP(f.precio)}` : ""}`);
+  const cambiarEstado = estado => {
+    if (estado === "suspendida" && !confirm(`¿Suspender ${e.nombre}? Podrán ver sus datos pero no modificarlos.`)) return;
+    accion(() => q(sb.from("suscripciones").update({ estado, actualizado: new Date().toISOString() }).eq("empresa_id", e.id)), estado === "suspendida" ? "Suspendida" : "Reactivada", `${estado === "suspendida" ? "Suspendió" : "Reactivó"} a ${e.nombre}`).then(ok => ok && set("estado", estado));
+  };
+  // Pago recibido: si había prueba o mora, la suscripción pasa a activa y se extiende la vigencia
+  const registrarCobro = async () => {
+    if (!/^\d{4}-\d{2}$/.test(cobro.periodo)) return alert("Período inválido (AAAA-MM)");
+    if (!(Number(cobro.monto) > 0)) return alert("Indica el monto");
+    const ok = await accion(() => q(sb.from("cobros_suscripcion").upsert({
+      empresa_id: e.id, periodo: cobro.periodo, monto_clp: Math.round(Number(cobro.monto)), estado: cobro.pagado ? "pagado" : "pendiente",
+      pagado_en: cobro.pagado ? cobro.pagado_en || toISO(new Date()) : null, medio: cobro.medio || null,
+    }, { onConflict: "empresa_id,periodo" })), "Cobro registrado", `Cobro ${cobro.periodo} de ${e.nombre}: ${fmtCLP(cobro.monto)} ${cobro.pagado ? "pagado" : "pendiente"}`);
+    if (ok && cobro.pagado && s && ["prueba", "morosa"].includes(s.estado) && confirm("¿Dejar la suscripción como Activa?")) {
+      const hasta = vencimiento(sumarMes(cobro.periodo, f.ciclo === "anual" ? 12 : 1), 1);
+      accion(() => q(sb.from("suscripciones").update({ estado: "activa", vigente_hasta: toISO(hasta), actualizado: new Date().toISOString() }).eq("empresa_id", e.id)),
+        "Suscripción activa", `Activó a ${e.nombre} hasta ${fmtFecha(hasta)}`).then(ok => ok && setF(x => ({ ...x, estado: "activa", vigente_hasta: toISO(hasta) })));
+    }
+  };
+  const estadoCobro = (c, estado) => accion(() => q(sb.from("cobros_suscripcion").update({ estado, pagado_en: estado === "pagado" ? toISO(new Date()) : null }).eq("id", c.id)),
+    `Cobro ${estado}`, `Cobro ${c.periodo} de ${e.nombre} marcado ${estado}`);
+
+  return (
+    <Modal titulo={e.nombre} onClose={onClose} ancho={900}
+      pie={<>{miembro && <button className="btn btn-ghost" onClick={onVer}>Entrar a la empresa ›</button>}<button className="btn btn-ghost" onClick={onClose}>Cerrar</button></>}>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <EstadoSus estado={s?.estado} />
+        <span className="muted">{[e.rut, e.email, e.telefono].filter(Boolean).join(" · ")} · alta {fmtFecha(e.creado.slice(0, 10))}</span>
+        <span style={{ marginLeft: "auto" }} />
+        {puede(["super_admin", "contabilidad"]) && s && (s.estado === "suspendida"
+          ? <button className="btn btn-primary btn-sm" onClick={() => cambiarEstado("activa")}>Reactivar</button>
+          : s.estado !== "cancelada" && <button className="btn btn-danger btn-sm" onClick={() => cambiarEstado("suspendida")}>Suspender</button>)}
+      </div>
+      <div className="grid g4" style={{ gap: 12 }}>
+        <div className="card" style={{ padding: 14 }}><div className="label">Cartera</div><div style={{ fontSize: 24, fontWeight: 800 }}>{e.unidades}<span className="muted" style={{ fontSize: 13 }}> unidades{pl?.max_unidades ? ` de ${pl.max_unidades}` : ""}</span></div><div className="muted">{e.ocupadas} arrendadas · {Number(e.unidades) - Number(e.ocupadas)} desocupadas</div></div>
+        <div className="card" style={{ padding: 14 }}><div className="label">Mensual</div><div style={{ fontSize: 24, fontWeight: 800 }}>{fmtCLP(precio)}</div><div className="muted">+ IVA · {f.ciclo === "anual" ? `anual ${fmtCLP(precio * 10)}` : "mensual"}</div></div>
+        <div className="card" style={{ padding: 14 }}><div className="label">Usuarios ({equipo.filter(m => m.activo).length}{pl?.max_usuarios ? ` de ${pl.max_usuarios}` : ""})</div>{equipo.map((m, i) => <div key={i} className="muted" style={m.activo ? null : { textDecoration: "line-through" }}>{m.nombre} · {m.rol === "dueno" ? "Dueño" : "Secretaria"}</div>)}</div>
+      </div>
+
+      <div className="section-title">Suscripción</div>
+      {!s ? <div className="muted">Sin suscripción.</div> : (
+        <>
+          <div className="form-grid">
+            <Campo label="Plan"><select className="select" value={f.plan_id} disabled={!puede(["super_admin", "contabilidad"])} onChange={x => set("plan_id", x.target.value)}>{d.planes.map(p => <option key={p.id} value={p.id}>{p.nombre} · {fmtCLP(p.precio_clp)}</option>)}</select></Campo>
+            <Campo label="Estado"><select className="select" value={f.estado} disabled={!puede(["super_admin", "contabilidad"])} onChange={x => set("estado", x.target.value)}>{Object.entries(ESTADOS_SUS).map(([k, v]) => <option key={k} value={k}>{v[0]}</option>)}</select></Campo>
+            <Campo label="Ciclo"><select className="select" value={f.ciclo} disabled={!puede(["super_admin", "contabilidad"])} onChange={x => set("ciclo", x.target.value)}><option value="mensual">Mensual</option><option value="anual">Anual (10 meses)</option></select></Campo>
+            <Campo label="Precio pactado ($, neto)"><input className="input" type="number" min="0" value={f.precio} placeholder={`Lista: ${fmtCLP(pl?.precio_clp)}`} disabled={!puede(["super_admin", "contabilidad"])} onChange={x => set("precio", x.target.value)} /></Campo>
+            <Campo label="Prueba hasta"><input className="input" type="date" value={f.prueba_hasta} disabled={!puede(["super_admin", "contabilidad"])} onChange={x => set("prueba_hasta", x.target.value)} /></Campo>
+            <Campo label="Vigente hasta"><input className="input" type="date" value={f.vigente_hasta} disabled={!puede(["super_admin", "contabilidad"])} onChange={x => set("vigente_hasta", x.target.value)} /></Campo>
+          </div>
+          {puede(["super_admin", "contabilidad"]) && <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={guardar}>Guardar suscripción</button>}
+        </>
+      )}
+
+      <div className="section-title">Cobros de la suscripción</div>
+      {!cobros.length ? <div className="muted" style={{ marginBottom: 10 }}>Sin cobros registrados.</div> : (
+        <div className="table-wrap" style={{ marginBottom: 10 }}><table>
+          <thead><tr><th>Período</th><th className="num">Monto</th><th>Estado</th><th>Pagado</th><th>Medio</th><th></th></tr></thead>
+          <tbody>{cobros.map(c => (
+            <tr key={c.id}>
+              <td>{c.periodo}</td><td className="num">{c.monto_clp != null ? fmtCLP(c.monto_clp) : `${c.monto_uf} UF`}</td>
+              <td><span className="tag" style={{ background: c.estado === "pagado" ? C.successBg : c.estado === "pendiente" ? "#FEF2F2" : C.bg, color: c.estado === "pagado" ? C.success : c.estado === "pendiente" ? "#B91C1C" : C.muted }}>{c.estado}</span></td>
+              <td>{fmtFecha(c.pagado_en)}</td><td className="muted">{c.medio || ""}</td>
+              <td>{puede(["super_admin", "contabilidad"]) && <div className="row" style={{ flexWrap: "nowrap" }}>
+                {c.estado === "pendiente" && <button className="btn btn-primary btn-sm" onClick={() => estadoCobro(c, "pagado")}>Pagado</button>}
+                {c.estado !== "anulado" && <button className="btn btn-ghost btn-sm" onClick={() => confirm(`¿Anular el cobro de ${c.periodo}?`) && estadoCobro(c, "anulado")}>Anular</button>}
+              </div>}</td>
+            </tr>))}</tbody>
+        </table></div>
+      )}
+      {puede(["super_admin", "contabilidad"]) && (
+        <div className="card" style={{ padding: 14, background: C.bg }}>
+          <div className="form-grid">
+            <Campo label="Período (AAAA-MM)"><input className="input" value={cobro.periodo} onChange={x => setCobro({ ...cobro, periodo: x.target.value })} /></Campo>
+            <Campo label="Monto con IVA ($)"><input className="input" type="number" min="1" value={cobro.monto} onChange={x => setCobro({ ...cobro, monto: x.target.value })} /></Campo>
+            <Campo label="Pagado el"><input className="input" type="date" value={cobro.pagado_en} disabled={!cobro.pagado} onChange={x => setCobro({ ...cobro, pagado_en: x.target.value })} /></Campo>
+            <Campo label="Medio"><input className="input" value={cobro.medio} onChange={x => setCobro({ ...cobro, medio: x.target.value })} /></Campo>
+          </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <label className="switch"><input type="checkbox" checked={cobro.pagado} onChange={x => setCobro({ ...cobro, pagado: x.target.checked })} />Ya está pagado</label>
+            <button className="btn btn-primary" onClick={registrarCobro}>Registrar cobro</button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function PlanesAdmin({ planes, editable, accion }) {
+  const [edit, setEdit] = useState(() => Object.fromEntries(planes.map(p => [p.id, { ...p, funciones: [...(p.funciones || [])] }])));
+  useEffect(() => { setEdit(Object.fromEntries(planes.map(p => [p.id, { ...p, funciones: [...(p.funciones || [])] }]))); }, [planes]);
+  const set = (id, k, v) => setEdit(x => ({ ...x, [id]: { ...x[id], [k]: v } }));
+  const togg = (id, fn) => setEdit(x => { const f = x[id].funciones; return { ...x, [id]: { ...x[id], funciones: f.includes(fn) ? f.filter(y => y !== fn) : [...f, fn] } }; });
+  const guardar = p => {
+    const e = edit[p.id];
+    if (!(Number(e.precio_clp) > 0)) return alert("Precio inválido");
+    accion(() => q(sb.from("planes").update({ nombre: e.nombre, precio_clp: Math.round(Number(e.precio_clp)), max_unidades: e.max_unidades === "" || e.max_unidades == null ? null : Number(e.max_unidades),
+      max_usuarios: e.max_usuarios === "" || e.max_usuarios == null ? null : Number(e.max_usuarios), funciones: e.funciones, activo: !!e.activo }).eq("id", p.id)),
+      `Plan ${e.nombre} guardado`, `Plan ${e.nombre}: ${fmtCLP(e.precio_clp)}, ${e.max_unidades || "∞"} unidades, ${e.max_usuarios || "∞"} usuarios, funciones ${e.funciones.join(", ") || "básicas"}`);
+  };
+  return (
+    <div className="grid" style={{ gap: 12, gridTemplateColumns: "repeat(auto-fill, minmax(270px, 1fr))" }}>
+      {planes.map(p => { const e = edit[p.id]; if (!e) return null; return (
+        <div key={p.id} className="card" style={{ padding: 16 }}>
+          <div className="row between"><div style={{ fontWeight: 800 }}>{p.nombre}</div><label className="switch"><input type="checkbox" checked={!!e.activo} disabled={!editable} onChange={x => set(p.id, "activo", x.target.checked)} />Activo</label></div>
+          <div className="grid" style={{ gap: 8, marginTop: 10 }}>
+            <Campo label="Nombre"><input className="input" value={e.nombre} disabled={!editable} onChange={x => set(p.id, "nombre", x.target.value)} /></Campo>
+            <Campo label="Precio mensual ($, neto)"><input className="input" type="number" value={e.precio_clp} disabled={!editable} onChange={x => set(p.id, "precio_clp", x.target.value)} /></Campo>
+            <div className="row" style={{ flexWrap: "nowrap" }}>
+              <Campo label="Unidades"><input className="input" type="number" value={e.max_unidades ?? ""} placeholder="∞" disabled={!editable} onChange={x => set(p.id, "max_unidades", x.target.value)} /></Campo>
+              <Campo label="Usuarios"><input className="input" type="number" value={e.max_usuarios ?? ""} placeholder="∞" disabled={!editable} onChange={x => set(p.id, "max_usuarios", x.target.value)} /></Campo>
+            </div>
+            {Object.entries(FUNCIONES_PLAN).map(([k, l]) => <label key={k} className="switch" style={{ fontWeight: 400 }}><input type="checkbox" checked={e.funciones.includes(k)} disabled={!editable} onChange={() => togg(p.id, k)} />{l}</label>)}
+          </div>
+          {editable && <button className="btn btn-primary btn-sm" style={{ marginTop: 12 }} onClick={() => guardar(p)}>Guardar</button>}
+        </div>); })}
+      <div className="muted" style={{ gridColumn: "1/-1" }}>Los cambios de precio rigen para todas las inmobiliarias sin precio pactado. Los límites y funciones se aplican de inmediato (los valida la base de datos).</div>
+    </div>
+  );
+}
+
+function CobrosAdmin({ d, editable, accion }) {
+  const [periodo, setPeriodo] = useState(mesActual());
+  const nombre = id => (d.emp.find(e => e.id === id) || {}).nombre || "—";
+  const delMes = d.cobros.filter(c => c.periodo === periodo);
+  const pagando = d.emp.filter(e => ["activa", "morosa"].includes(e.estado));
+  const sinCobro = pagando.filter(e => !delMes.some(c => c.empresa_id === e.id && c.estado !== "anulado"));
+  const meses = Array.from({ length: 12 }, (_, i) => sumarMes(mesActual(), -i));
+  const totalPagado = delMes.filter(c => c.estado === "pagado").reduce((t, c) => t + (c.monto_clp || 0), 0);
+  const totalPend = delMes.filter(c => c.estado === "pendiente").reduce((t, c) => t + (c.monto_clp || 0), 0);
+  return (
+    <div className="grid" style={{ gap: 12 }}>
+      <div className="row between">
+        <select className="select" style={{ width: 180 }} value={periodo} onChange={x => setPeriodo(x.target.value)}>{meses.map(m => <option key={m} value={m}>{nombrePeriodo(m)}</option>)}</select>
+        <div className="muted">Pagado {fmtCLP(totalPagado)} · pendiente {fmtCLP(totalPend)}</div>
+      </div>
+      {sinCobro.length > 0 && <div className="card" style={{ padding: 12, background: C.warningBg, fontSize: 13 }}>Sin cobro registrado en {nombrePeriodo(periodo)}: <b>{sinCobro.map(e => e.nombre).join(", ")}</b>. Regístralo desde la ficha de cada inmobiliaria.</div>}
+      {!delMes.length ? <div className="card empty">Sin cobros en {nombrePeriodo(periodo)}.</div> : (
+        <div className="table-wrap"><table>
+          <thead><tr><th>Inmobiliaria</th><th className="num">Monto</th><th>Estado</th><th>Pagado</th><th>Medio</th><th></th></tr></thead>
+          <tbody>{delMes.map(c => (
+            <tr key={c.id}><td style={{ fontWeight: 600 }}>{nombre(c.empresa_id)}</td><td className="num">{c.monto_clp != null ? fmtCLP(c.monto_clp) : `${c.monto_uf} UF`}</td>
+              <td>{c.estado}</td><td>{fmtFecha(c.pagado_en)}</td><td className="muted">{c.medio || ""}</td>
+              <td>{editable && c.estado === "pendiente" && <button className="btn btn-primary btn-sm" onClick={() => accion(() => q(sb.from("cobros_suscripcion").update({ estado: "pagado", pagado_en: toISO(new Date()) }).eq("id", c.id)), "Cobro pagado", `Cobro ${c.periodo} de ${nombre(c.empresa_id)} marcado pagado`)}>Pagado</button>}</td>
+            </tr>))}</tbody>
+        </table></div>
+      )}
+    </div>
+  );
+}
+
 function ConfigView() {
   const { st, update, user, toast, recargarUF, recargar } = useApp();
   const [emp, setEmp] = useState(st.empresa);
@@ -3236,6 +3537,7 @@ function App() {
   const [empresas, setEmpresas] = useState(null);
   const [esAdmin, setEsAdmin] = useState(false);
   const [empresaId, setEmpresaId] = useState(null);
+  const [plataforma, setPlataforma] = useState(() => location.hash === "#plataforma");
   const [st, setSt] = useState(null);
   const [error, setError] = useState("");
   const [intento, setIntento] = useState(0);
@@ -3344,7 +3646,10 @@ function App() {
   if (!sesionSb) return <><style>{css}</style><Acceso /></>;
   if (error && !st) return <><style>{css}</style><Cargando error={error} onReintentar={() => setIntento(i => i + 1)} /></>;
   if (!empresas) return <><style>{css}</style><Cargando /></>;
-  if (!empresaId) return <><style>{css}</style><Bienvenida sesionSb={sesionSb} empresas={empresas} esAdmin={esAdmin}
+  const irPlataforma = v => { setPlataforma(v); history.replaceState(null, "", v ? "#plataforma" : location.pathname + location.search); };
+  if (esAdmin && plataforma) return <><style>{css}</style><PlataformaView sesionSb={sesionSb} empresas={empresas}
+    onVer={id => { irPlataforma(false); setFicha(null); setEmpresaId(id); }} onSalir={() => irPlataforma(false)} /></>;
+  if (!empresaId) return <><style>{css}</style><Bienvenida sesionSb={sesionSb} empresas={empresas} esAdmin={esAdmin} onPlataforma={() => irPlataforma(true)}
     onElegir={setEmpresaId} onCreada={id => { local.set("qipo-empresa", id); setIntento(i => i + 1); }} /></>;
   if (!st) return <><style>{css}</style><Cargando texto="Cargando propiedades…" /></>;
   if (!user) return <><style>{css}</style><Cargando error="Tu usuario está desactivado en esta empresa." onReintentar={() => setIntento(i => i + 1)} /></>;
@@ -3385,6 +3690,7 @@ function App() {
           <div style={{ marginTop: "auto", padding: "12px 8px 0", borderTop: "1px solid rgba(255,255,255,.08)" }}>
             <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{user.nombre}</div>
             <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{user.rol === "dueno" ? "Dueño" : "Secretaria"}{esAdmin ? " · admin HM" : ""}</div>
+            {esAdmin && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { setFicha(null); irPlataforma(true); }}>🛰️ Panel de plataforma</button>}
             {empresas.length > 1 && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("qipo-empresa", null); setFicha(null); setEmpresaId(null); }}>⇄ Cambiar empresa</button>}
             <button className="nav-item" style={{ paddingLeft: 0 }} onClick={salir}>↩ Cerrar sesión</button>
           </div>
