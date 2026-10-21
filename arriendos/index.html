@@ -310,6 +310,7 @@ function mensajeError(e) {
   if (/Invalid login credentials/i.test(m)) return "Correo o clave incorrectos.";
   if (/Email not confirmed/i.test(m)) return "Confirma tu correo con el enlace que te enviamos antes de ingresar.";
   if (/User already registered/i.test(m)) return "Ese correo ya tiene cuenta. Ingresa con tu clave.";
+  if (/Email address .* is invalid/i.test(m)) return "El servidor de correo no aceptó esa dirección. Revisa que esté bien escrita; si lo está, el administrador debe configurar el envío de correos en Supabase.";
   if (/Failed to fetch|NetworkError/i.test(m)) return "Sin conexión con el servidor. Revisa tu internet.";
   return m;
 }
@@ -1072,10 +1073,12 @@ function Acceso() {
 
 function NuevaClave({ onListo }) {
   const [clave, setClave] = useState("");
+  const [clave2, setClave2] = useState("");
   const [error, setError] = useState("");
   const guardar = async e => {
     e.preventDefault();
     if (clave.length < 8) return setError("La clave debe tener al menos 8 caracteres.");
+    if (clave !== clave2) return setError("Las claves no coinciden.");
     try { await q(sb.auth.updateUser({ password: clave })); onListo(); } catch (err) { setError(mensajeError(err)); }
   };
   return (
@@ -1083,6 +1086,7 @@ function NuevaClave({ onListo }) {
       <div className="muted" style={{ marginBottom: 20 }}>Crea tu clave nueva</div>
       <form onSubmit={guardar} className="grid" style={{ gap: 12 }}>
         <Campo label="Clave nueva"><input className="input" type="password" value={clave} onChange={e => setClave(e.target.value)} autoComplete="new-password" autoFocus /></Campo>
+        <Campo label="Repetir clave nueva"><input className="input" type="password" value={clave2} onChange={e => setClave2(e.target.value)} autoComplete="new-password" /></Campo>
         {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
         <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }}>Guardar clave</button>
       </form>
@@ -2509,7 +2513,7 @@ function ConfigView() {
   const { st, update, user, toast, recargarUF, recargar } = useApp();
   const [emp, setEmp] = useState(st.empresa);
   const [inv, setInv] = useState({ nombre: "", email: "", rol: "secretaria" });
-  const [clave, setClave] = useState("");
+  const [clave, setClave] = useState({ actual: "", nueva: "", repetir: "" });
   const [haylocal, setHayLocal] = useState(false);
   const archivo = useRef(null);
   const E = st.empresa.id;
@@ -2532,10 +2536,15 @@ function ConfigView() {
     setInv({ nombre: "", email: "", rol: "secretaria" });
   };
   const mensajeInvitacion = i => `Hola ${i.nombre}, te invité a ${st.empresa.nombre} en Qipo Arriendos. Crea tu cuenta con este correo (${i.email}) en: ${urlRetorno()}`;
-  const cambiarClave = () => {
-    if (clave.length < 8) return toast("La clave debe tener al menos 8 caracteres");
-    accion(() => q(sb.auth.updateUser({ password: clave })), "Clave actualizada");
-    setClave("");
+  // Pide la clave actual para evitar cambios por autocompletado del navegador o descuido
+  const cambiarClave = async () => {
+    if (!clave.actual) return toast("Escribe tu clave actual");
+    if (clave.nueva.length < 8) return toast("La clave nueva debe tener al menos 8 caracteres");
+    if (clave.nueva !== clave.repetir) return toast("Las claves nuevas no coinciden");
+    try { await q(sb.auth.signInWithPassword({ email: user.email, password: clave.actual })); }
+    catch { return toast("La clave actual no es correcta"); }
+    await accion(() => q(sb.auth.updateUser({ password: clave.nueva })), "Clave actualizada. Úsala la próxima vez que ingreses.");
+    setClave({ actual: "", nueva: "", repetir: "" });
   };
   const importar = (d, origen) => {
     const r = conIdsNuevos(d);
@@ -2619,10 +2628,12 @@ function ConfigView() {
         <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={invitar}>Invitar</button>
         <div className="muted" style={{ marginTop: 8 }}>La persona se registra en esta misma página con ese correo y queda dentro de tu empresa.</div>
         <div className="label" style={{ marginTop: 16 }}>Cambiar mi clave</div>
-        <div className="row">
-          <div style={{ width: 220 }}><input className="input" type="password" value={clave} onChange={e => setClave(e.target.value)} autoComplete="new-password" placeholder="Clave nueva" /></div>
-          <button className="btn btn-ghost" onClick={cambiarClave}>Guardar clave</button>
+        <div className="form-grid">
+          <Campo label="Clave actual"><input className="input" type="password" value={clave.actual} onChange={e => setClave({ ...clave, actual: e.target.value })} autoComplete="current-password" name="clave-actual" /></Campo>
+          <Campo label="Clave nueva"><input className="input" type="password" value={clave.nueva} onChange={e => setClave({ ...clave, nueva: e.target.value })} autoComplete="new-password" name="clave-nueva" /></Campo>
+          <Campo label="Repetir clave nueva"><input className="input" type="password" value={clave.repetir} onChange={e => setClave({ ...clave, repetir: e.target.value })} autoComplete="new-password" name="clave-repetir" /></Campo>
         </div>
+        <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={cambiarClave}>Cambiar clave</button>
       </div>
 
       <div className="card">
