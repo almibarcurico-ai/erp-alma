@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Propiedades disponibles</title>
+  <meta name="description" content="Propiedades disponibles en arriendo y venta"/>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='85'>🏠</text></svg>"/>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <style>
+    :root { --p: #1A3A8A; --p-dim: #EEF2FF; --bg: #F7F9FC; --card: #fff; --text: #0A1628; --dim: #4A5878; --muted: #8A9EC0; --border: #E2E8F4; --ok: #0A7A3E; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; }
+    a { color: var(--p); }
+    button, input, select, textarea { font: inherit; }
+    header { background: var(--p); color: #fff; padding: 28px 16px 70px; }
+    .wrap { max-width: 1180px; margin: 0 auto; }
+    header h1 { margin: 0; font-size: 26px; }
+    header p { margin: 8px 0 0; opacity: .85; max-width: 720px; line-height: 1.5; }
+    header .acciones { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: #fff; color: var(--text); padding: 9px 14px; border-radius: 9px; cursor: pointer; font-weight: 600; text-decoration: none; font-size: 13.5px; }
+    .btn:hover { border-color: var(--p); }
+    .btn-p { background: var(--p); color: #fff; border-color: var(--p); }
+    .btn-wa { background: #25D366; color: #fff; border-color: #25D366; }
+    .btn-claro { background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.3); }
+    .filtros { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin: -48px 16px 0; box-shadow: 0 8px 24px rgba(10,22,40,.08); }
+    .filtros .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+    .campo label { display: block; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+    .campo input, .campo select, .campo textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text); }
+    .campo input:focus, .campo select:focus, .campo textarea:focus { outline: 2px solid var(--p-dim); border-color: var(--p); }
+    .segmento { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+    .segmento button { border: 1px solid var(--border); background: #fff; padding: 7px 14px; border-radius: 99px; cursor: pointer; font-weight: 600; color: var(--dim); }
+    .segmento button.on { background: var(--p); border-color: var(--p); color: #fff; }
+    .barra { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 18px 16px 12px; flex-wrap: wrap; }
+    .barra .cuenta { font-weight: 700; }
+    main { padding-bottom: 40px; }
+    .lista { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; padding: 0 16px; }
+    .tarjeta { background: var(--card); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; cursor: pointer; display: flex; flex-direction: column; transition: box-shadow .15s, transform .15s; }
+    .tarjeta:hover { box-shadow: 0 10px 28px rgba(10,22,40,.1); transform: translateY(-2px); }
+    .portada { position: relative; aspect-ratio: 4/3; background: var(--p-dim); display: flex; align-items: center; justify-content: center; font-size: 46px; }
+    .portada img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .chips { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; }
+    .chip { background: rgba(255,255,255,.95); color: var(--text); font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 99px; }
+    .chip.op { background: var(--p); color: #fff; }
+    .nfotos { position: absolute; bottom: 10px; right: 10px; background: rgba(10,22,40,.65); color: #fff; font-size: 11.5px; padding: 3px 8px; border-radius: 99px; }
+    .cuerpo { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+    .titulo { font-weight: 700; font-size: 15px; }
+    .lugar { color: var(--dim); font-size: 13px; }
+    .specs { display: flex; gap: 12px; flex-wrap: wrap; color: var(--dim); font-size: 12.5px; }
+    .precio { margin-top: auto; padding-top: 6px; font-size: 18px; font-weight: 800; color: var(--p); }
+    .precio small, .grande small { display: block; font-size: 12px; font-weight: 500; color: var(--muted); }
+    #mapa { height: 520px; margin: 0 16px; border-radius: 14px; border: 1px solid var(--border); }
+    .vacio { text-align: center; color: var(--dim); padding: 50px 16px; }
+    .overlay { position: fixed; inset: 0; background: rgba(10,22,40,.55); display: flex; justify-content: center; align-items: flex-start; overflow-y: auto; padding: 24px 12px; z-index: 1000; }
+    .modal { background: var(--card); border-radius: 16px; width: 100%; max-width: 920px; overflow: hidden; }
+    .galeria { position: relative; background: #0A1628; aspect-ratio: 16/10; display: flex; align-items: center; justify-content: center; font-size: 60px; }
+    .galeria img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .galeria .nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,.9); border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; font-size: 20px; }
+    .galeria .izq { left: 10px; } .galeria .der { right: 10px; }
+    .cerrar { position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,.95); border: none; width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-size: 18px; z-index: 2; }
+    .miniaturas { display: flex; gap: 6px; padding: 8px; overflow-x: auto; background: #0A1628; }
+    .miniaturas img { width: 72px; height: 54px; object-fit: cover; border-radius: 6px; cursor: pointer; opacity: .55; flex-shrink: 0; }
+    .miniaturas img.on { opacity: 1; outline: 2px solid #fff; }
+    .detalle { display: grid; grid-template-columns: 1.4fr 1fr; gap: 22px; padding: 20px; }
+    .detalle h2 { margin: 0 0 4px; font-size: 21px; }
+    .datos { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin: 14px 0; }
+    .dato { background: var(--bg); border-radius: 10px; padding: 9px 11px; }
+    .dato b { display: block; font-size: 15px; }
+    .dato span { font-size: 11.5px; color: var(--muted); }
+    .desc { line-height: 1.6; color: var(--dim); white-space: pre-line; }
+    #mapa-detalle { height: 200px; border-radius: 10px; margin-top: 12px; border: 1px solid var(--border); }
+    .contacto { background: var(--bg); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; align-self: start; }
+    .contacto .grande { font-size: 22px; font-weight: 800; color: var(--p); }
+    .msg { font-size: 13px; padding: 8px 10px; border-radius: 8px; }
+    .msg.ok { background: #EDFAF3; color: var(--ok); }
+    .msg.error { background: #FFF0F0; color: #8A1A1A; }
+    .oculto { position: absolute; left: -9999px; }
+    footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px 16px 30px; }
+    .mas-filtros { display: none; margin-top: 10px; }
+    @media (max-width: 760px) {
+      .filtros:not(.abierto) .avanzado { display: none; }
+      .mas-filtros { display: inline-flex; }
+      header h1 { font-size: 21px; }
+      .detalle { grid-template-columns: 1fr; padding: 16px; }
+      #mapa { height: 420px; }
+      .overlay { padding: 0; }
+      .modal { border-radius: 0; min-height: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header><div class="wrap">
+    <h1 id="titulo">Cargando…</h1>
+    <p id="descripcion"></p>
+    <div class="acciones" id="acciones"></div>
+  </div></header>
+  <main class="wrap">
+    <section class="filtros" id="filtros" hidden>
+      <div class="segmento" id="seg-operacion"></div>
+      <div class="grid">
+        <div class="campo"><label for="f-tipo">Tipo</label><select id="f-tipo"></select></div>
+        <div class="campo"><label for="f-ciudad">Ciudad</label><select id="f-ciudad"></select></div>
+        <div class="campo"><label for="f-comuna">Comuna</label><select id="f-comuna"></select></div>
+        <div class="campo avanzado"><label for="f-dorm">Dormitorios</label><select id="f-dorm"><option value="">Todos</option><option value="1">1 o más</option><option value="2">2 o más</option><option value="3">3 o más</option><option value="4">4 o más</option></select></div>
+        <div class="campo avanzado"><label for="f-banos">Baños</label><select id="f-banos"><option value="">Todos</option><option value="1">1 o más</option><option value="2">2 o más</option><option value="3">3 o más</option></select></div>
+        <div class="campo avanzado"><label for="f-min">Precio desde (UF)</label><input id="f-min" type="number" min="0" inputmode="decimal"/></div>
+        <div class="campo avanzado"><label for="f-max">Precio hasta (UF)</label><input id="f-max" type="number" min="0" inputmode="decimal"/></div>
+        <div class="campo avanzado"><label for="f-m2">Superficie mínima (m²)</label><input id="f-m2" type="number" min="0" inputmode="numeric"/></div>
+        <div class="campo"><label for="f-texto">Buscar</label><input id="f-texto" type="search" placeholder="Ej: metro, patio, esquina"/></div>
+      </div>
+      <button class="btn mas-filtros" id="mas-filtros" type="button">Más filtros</button>
+    </section>
+    <div class="barra" id="barra" hidden>
+      <div class="cuenta" id="cuenta"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" id="limpiar">Limpiar filtros</button>
+        <div class="segmento" style="margin:0" id="seg-vista"></div>
+      </div>
+    </div>
+    <div class="lista" id="lista"></div>
+    <div id="mapa" hidden></div>
+  </main>
+  <footer id="pie"></footer>
+  <div id="modal-raiz"></div>
+
+<script>
+// Página pública de una inmobiliaria (Qipo Arriendos). Lee solo lo que devuelve la función
+// web_inmobiliaria: unidades sin arrendar marcadas para publicar, sin datos privados.
+const SUPABASE_URL = "https://xieoddpllbxtwqmhgkui.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhpZW9kZHBsbGJ4dHdxbWhna3VpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MzMzNDYsImV4cCI6MjEwODEwOTM0Nn0.odxeZncpiyRthgHVRvXLkDISzbjAT21_G1S_OIOa5XU";
+const CATEGORIAS = { casa: "Casa", depto: "Departamento", oficina: "Oficina", local: "Local comercial", bodega: "Bodega", terreno: "Terreno", otro: "Otro" };
+const ICONO = { casa: "🏠", depto: "🏢", oficina: "💼", local: "🏬", bodega: "📦", terreno: "🌳", otro: "📍" };
+const OPERACION = { arriendo: "Arriendo", venta: "Venta", ambas: "Arriendo y venta" };
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fotoSegura = f => typeof f === "string" && /^(https:\/\/|data:image\/)/.test(f) ? f : null;
+const fmtUF = n => Number(n).toLocaleString("es-CL", { minimumFractionDigits: 0, maximumFractionDigits: 2 }) + " UF";
+const fmtCLP = n => "$" + Math.round(n).toLocaleString("es-CL");
+const telWA = t => { let d = String(t || "").replace(/\D/g, ""); if (d.length === 9 && d[0] === "9") d = "56" + d; if (d.length === 8) d = "569" + d; return d; };
+const slug = (location.pathname.match(/\/web\/([a-z0-9-]+)\/?$/i) || [])[1] || new URLSearchParams(location.search).get("e") || "";
+
+let empresa = null, props = [], uf = 0, vista = "lista", mapa = null;
+const filtro = { operacion: "", tipo: "", ciudad: "", comuna: "", dorm: "", banos: "", min: "", max: "", m2: "", texto: "" };
+
+async function rpc(fn, body) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: "POST", headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const texto = await r.text();
+  const datos = texto ? JSON.parse(texto) : null;
+  if (!r.ok) throw new Error((datos && datos.message) || "Error del servidor");
+  return datos;
+}
+
+const nombre = p => p.es_centro ? `${p.unidad} · ${p.propiedad}` : p.propiedad;
+const lugar = p => [p.comuna, p.ciudad].filter(Boolean).join(", ");
+const tieneArriendo = p => p.operacion !== "venta";
+const tieneVenta = p => p.operacion !== "arriendo";
+// Precio que corresponde al filtro de operación (si no hay filtro: arriendo, o venta si solo se vende)
+const precioDe = p => filtro.operacion === "venta" || !tieneArriendo(p) ? Number(p.precio_venta_uf) || 0 : Number(p.precio_uf) || 0;
+
+function precioHTML(p) {
+  const linea = (v, sufijo) => `${fmtUF(v)}${sufijo}${uf ? `<small>≈ ${fmtCLP(v * uf)}${sufijo} · UF de hoy</small>` : ""}`;
+  const partes = [];
+  if (tieneArriendo(p) && Number(p.precio_uf)) partes.push(linea(Number(p.precio_uf), " /mes"));
+  if (tieneVenta(p) && Number(p.precio_venta_uf)) partes.push(linea(Number(p.precio_venta_uf), ""));
+  return partes.length ? partes.join("<div style='height:4px'></div>") : `<span style="font-size:14px">Consultar precio</span>`;
+}
+
+function specsHTML(p) {
+  return [p.m2 && `📐 ${esc(p.m2)} m²`, Number(p.dormitorios) && `🛏️ ${esc(p.dormitorios)} dorm.`, Number(p.banos) && `🚿 ${esc(p.banos)} baño${p.banos > 1 ? "s" : ""}`, Number(p.estacionamientos) && `🚗 ${esc(p.estacionamientos)} estac.`]
+    .filter(Boolean).map(t => `<span>${t}</span>`).join("");
+}
+
+function filtradas() {
+  const txt = filtro.texto.trim().toLowerCase();
+  return props.filter(p =>
+    (!filtro.operacion || (filtro.operacion === "arriendo" ? tieneArriendo(p) : tieneVenta(p))) &&
+    (!filtro.tipo || p.categoria === filtro.tipo) &&
+    (!filtro.ciudad || p.ciudad === filtro.ciudad) &&
+    (!filtro.comuna || p.comuna === filtro.comuna) &&
+    (!filtro.dorm || Number(p.dormitorios) >= Number(filtro.dorm)) &&
+    (!filtro.banos || Number(p.banos) >= Number(filtro.banos)) &&
+    (!filtro.m2 || Number(p.m2) >= Number(filtro.m2)) &&
+    (!filtro.min || precioDe(p) >= Number(filtro.min)) &&
+    (!filtro.max || (precioDe(p) && precioDe(p) <= Number(filtro.max))) &&
+    (!txt || [p.propiedad, p.unidad, p.descripcion, p.comuna, p.ciudad, CATEGORIAS[p.categoria]].join(" ").toLowerCase().includes(txt)));
+}
+
+const opciones = (valores, todos) => `<option value="">${todos}</option>` + valores.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+const unicos = arr => [...new Set(arr.filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+
+function pintarFiltros() {
+  $("seg-operacion").innerHTML = [["", "Todas"], ["arriendo", "Arriendo"], ["venta", "Venta"]]
+    .map(([v, l]) => `<button data-op="${v}" class="${filtro.operacion === v ? "on" : ""}">${l}</button>`).join("");
+  $("f-tipo").innerHTML = opciones(unicos(props.map(p => p.categoria)).map(c => [c, CATEGORIAS[c] || c]), "Todos");
+  $("f-ciudad").innerHTML = opciones(unicos(props.map(p => p.ciudad)).map(c => [c, c]), "Todas");
+  const comunas = unicos(props.filter(p => !filtro.ciudad || p.ciudad === filtro.ciudad).map(p => p.comuna));
+  if (filtro.comuna && !comunas.includes(filtro.comuna)) filtro.comuna = "";
+  $("f-comuna").innerHTML = opciones(comunas.map(c => [c, c]), "Todas");
+  for (const [k, id] of [["tipo", "f-tipo"], ["ciudad", "f-ciudad"], ["comuna", "f-comuna"], ["dorm", "f-dorm"], ["banos", "f-banos"], ["min", "f-min"], ["max", "f-max"], ["m2", "f-m2"], ["texto", "f-texto"]])
+    if ($(id).value !== filtro[k]) $(id).value = filtro[k];
+  $("seg-vista").innerHTML = [["lista", "▦ Fotos"], ["mapa", "🗺️ Mapa"]].map(([v, l]) => `<button data-vista="${v}" class="${vista === v ? "on" : ""}">${l}</button>`).join("");
+}
+
+function pintar() {
+  pintarFiltros();
+  const lista = filtradas();
+  $("cuenta").textContent = `${lista.length} propiedad${lista.length === 1 ? "" : "es"} disponible${lista.length === 1 ? "" : "s"}`;
+  $("lista").hidden = vista !== "lista"; $("mapa").hidden = vista !== "mapa";
+  if (vista === "lista") {
+    $("lista").innerHTML = lista.length ? lista.map(p => {
+      const f = (p.fotos || []).map(fotoSegura).filter(Boolean);
+      return `<article class="tarjeta" data-id="${esc(p.id)}" tabindex="0">
+        <div class="portada">${f[0] ? `<img src="${esc(f[0])}" alt="${esc(nombre(p))}" loading="lazy"/>` : ICONO[p.categoria] || "📍"}
+          <div class="chips"><span class="chip op">${esc(OPERACION[p.operacion] || "Arriendo")}</span><span class="chip">${esc(CATEGORIAS[p.categoria] || "Propiedad")}</span></div>
+          ${f.length > 1 ? `<span class="nfotos">📷 ${f.length}</span>` : ""}</div>
+        <div class="cuerpo"><div class="titulo">${esc(nombre(p))}</div><div class="lugar">📍 ${esc(lugar(p) || "—")}</div>
+          <div class="specs">${specsHTML(p)}</div><div class="precio">${precioHTML(p)}</div></div></article>`;
+    }).join("") : `<div class="vacio" style="grid-column:1/-1">No hay propiedades con esos filtros. <a href="#" id="limpiar2">Ver todas</a></div>`;
+  } else pintarMapa(lista);
+  const q = new URLSearchParams(Object.entries(filtro).filter(([, v]) => v));
+  if (new URLSearchParams(location.search).get("e")) q.set("e", slug);
+  history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : "") + location.hash);
+}
+
+function pintarMapa(lista) {
+  if (!window.L) { $("mapa").innerHTML = `<div class="vacio">No se pudo cargar el mapa.</div>`; return; }
+  if (!mapa) { mapa = L.map("mapa"); L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(mapa); }
+  mapa.invalidateSize();
+  mapa.eachLayer(l => { if (l instanceof L.CircleMarker) mapa.removeLayer(l); });
+  const pts = lista.filter(p => p.lat != null && p.lng != null);
+  pts.forEach(p => L.circleMarker([p.lat, p.lng], { radius: 9, color: "#fff", weight: 2, fillColor: getComputedStyle(document.documentElement).getPropertyValue("--p"), fillOpacity: 1 })
+    .addTo(mapa).bindTooltip(`<b>${esc(nombre(p))}</b><br>${esc(OPERACION[p.operacion])} · ${esc(CATEGORIAS[p.categoria] || "")}`).on("click", () => abrir(p.id)));
+  if (pts.length) mapa.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 15 }); else mapa.setView([-33.45, -70.66], 11);
+}
+
+function abrir(id) {
+  const p = props.find(x => x.id === id);
+  if (!p) return;
+  if (location.hash !== "#p=" + id) history.replaceState(null, "", location.pathname + location.search + "#p=" + id);
+  const fotos = (p.fotos || []).map(fotoSegura).filter(Boolean);
+  let i = 0;
+  const url = location.href;
+  const msgWA = `Hola, me interesa la propiedad "${nombre(p)}" (${lugar(p)}) que vi en su página: ${url}`;
+  const datos = [[p.m2 && `${p.m2} m²`, "Superficie"], [Number(p.dormitorios) && p.dormitorios, "Dormitorios"], [Number(p.banos) && p.banos, "Baños"],
+    [Number(p.estacionamientos) && p.estacionamientos, "Estacionamientos"], [p.gastos_comunes && fmtCLP(Number(p.gastos_comunes)), "Gastos comunes aprox."],
+    [CATEGORIAS[p.categoria], "Tipo"]].filter(([v]) => v);
+  $("modal-raiz").innerHTML = `<div class="overlay" id="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(nombre(p))}">
+    <div class="galeria" id="galeria"><button class="cerrar" id="cerrar" aria-label="Cerrar">✕</button>
+      ${fotos.length ? `<img id="foto-grande" src="${esc(fotos[0])}" alt="${esc(nombre(p))}"/>` : ICONO[p.categoria] || "📍"}
+      ${fotos.length > 1 ? `<button class="nav izq" id="ant" aria-label="Foto anterior">‹</button><button class="nav der" id="sig" aria-label="Foto siguiente">›</button>` : ""}</div>
+    ${fotos.length > 1 ? `<div class="miniaturas">${fotos.map((f, k) => `<img src="${esc(f)}" data-k="${k}" class="${k ? "" : "on"}" alt="" loading="lazy"/>`).join("")}</div>` : ""}
+    <div class="detalle">
+      <div>
+        <div style="display:flex;gap:6px;margin-bottom:8px"><span class="chip op">${esc(OPERACION[p.operacion])}</span><span class="chip" style="background:var(--p-dim)">${esc(CATEGORIAS[p.categoria] || "Propiedad")}</span></div>
+        <h2>${esc(nombre(p))}</h2><div class="lugar">📍 ${esc(lugar(p) || "—")} <span style="color:var(--muted)">(ubicación aproximada)</span></div>
+        <div class="datos">${datos.map(([v, l]) => `<div class="dato"><b>${esc(v)}</b><span>${l}</span></div>`).join("")}</div>
+        ${p.descripcion ? `<div class="desc">${esc(p.descripcion)}</div>` : ""}
+        ${p.lat != null ? `<div id="mapa-detalle"></div>` : ""}
+      </div>
+      <div class="contacto">
+        <div class="grande">${precioHTML(p)}</div>
+        ${empresa.whatsapp ? `<a class="btn btn-wa" style="justify-content:center" target="_blank" rel="noopener" href="https://wa.me/${telWA(empresa.whatsapp)}?text=${encodeURIComponent(msgWA)}">WhatsApp</a>` : ""}
+        <div style="font-weight:700;margin-top:4px">Pide más información o una visita</div>
+        <form id="form-contacto" style="display:flex;flex-direction:column;gap:8px">
+          <div class="campo"><label for="c-nombre">Nombre</label><input id="c-nombre" required maxlength="100" autocomplete="name"/></div>
+          <div class="campo"><label for="c-tel">Teléfono</label><input id="c-tel" maxlength="30" autocomplete="tel" inputmode="tel"/></div>
+          <div class="campo"><label for="c-email">Correo</label><input id="c-email" type="email" maxlength="120" autocomplete="email"/></div>
+          <div class="campo"><label for="c-msg">Mensaje</label><textarea id="c-msg" rows="3" maxlength="1000">Hola, me interesa esta propiedad. ¿Podemos coordinar una visita?</textarea></div>
+          <input class="oculto" id="c-sitio" tabindex="-1" autocomplete="off" aria-hidden="true"/>
+          <div id="c-estado"></div>
+          <button class="btn btn-p" style="justify-content:center" id="c-enviar">Enviar</button>
+        </form>
+        <button class="btn" id="copiar" style="justify-content:center">🔗 Copiar enlace</button>
+      </div>
+    </div></div></div>`;
+  document.body.style.overflow = "hidden";
+  const mostrar = k => { i = (k + fotos.length) % fotos.length; $("foto-grande").src = fotos[i]; document.querySelectorAll(".miniaturas img").forEach(m => m.classList.toggle("on", Number(m.dataset.k) === i)); };
+  if (fotos.length > 1) { $("ant").onclick = () => mostrar(i - 1); $("sig").onclick = () => mostrar(i + 1); document.querySelectorAll(".miniaturas img").forEach(m => m.onclick = () => mostrar(Number(m.dataset.k))); }
+  $("cerrar").onclick = cerrar;
+  $("overlay").onclick = e => { if (e.target.id === "overlay") cerrar(); };
+  $("copiar").onclick = () => navigator.clipboard.writeText(location.href).then(() => { $("copiar").textContent = "✓ Enlace copiado"; });
+  $("form-contacto").onsubmit = async e => {
+    e.preventDefault();
+    const estado = $("c-estado");
+    if ($("c-sitio").value) return; // relleno automático: se ignora
+    if (!$("c-tel").value.trim() && !$("c-email").value.trim()) { estado.innerHTML = `<div class="msg error">Ingresa un teléfono o un correo para responderte.</div>`; return; }
+    $("c-enviar").disabled = true; estado.innerHTML = "";
+    try {
+      await rpc("web_contacto", { p_slug: slug, p_unidad: p.id, p_nombre: $("c-nombre").value, p_telefono: $("c-tel").value, p_email: $("c-email").value, p_mensaje: $("c-msg").value });
+      $("form-contacto").innerHTML = `<div class="msg ok">¡Gracias! Recibimos tus datos y te contactaremos pronto.</div>`;
+    } catch (err) { estado.innerHTML = `<div class="msg error">${esc(err.message)}</div>`; $("c-enviar").disabled = false; }
+  };
+  if (p.lat != null && window.L) {
+    const m = L.map("mapa-detalle", { scrollWheelZoom: false }).setView([p.lat, p.lng], 15);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(m);
+    L.circle([p.lat, p.lng], { radius: 150, color: getComputedStyle(document.documentElement).getPropertyValue("--p"), fillOpacity: .2 }).addTo(m);
+  }
+}
+
+function cerrar() {
+  $("modal-raiz").innerHTML = ""; document.body.style.overflow = "";
+  history.replaceState(null, "", location.pathname + location.search);
+}
+
+function conectar() {
+  $("seg-operacion").onclick = e => { const b = e.target.closest("button"); if (b) { filtro.operacion = b.dataset.op; pintar(); } };
+  $("seg-vista").onclick = e => { const b = e.target.closest("button"); if (b) { vista = b.dataset.vista; pintar(); } };
+  for (const [k, id] of [["tipo", "f-tipo"], ["ciudad", "f-ciudad"], ["comuna", "f-comuna"], ["dorm", "f-dorm"], ["banos", "f-banos"], ["min", "f-min"], ["max", "f-max"], ["m2", "f-m2"], ["texto", "f-texto"]])
+    $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => { filtro[k] = $(id).value; pintar(); });
+  $("mas-filtros").onclick = () => { const f = $("filtros"); f.classList.toggle("abierto"); $("mas-filtros").textContent = f.classList.contains("abierto") ? "Menos filtros" : "Más filtros"; };
+  const limpiar = () => { Object.keys(filtro).forEach(k => filtro[k] = ""); pintar(); };
+  $("limpiar").onclick = limpiar;
+  $("lista").onclick = e => { if (e.target.id === "limpiar2") { e.preventDefault(); return limpiar(); } const t = e.target.closest(".tarjeta"); if (t) abrir(t.dataset.id); };
+  $("lista").onkeydown = e => { const t = e.target.closest(".tarjeta"); if (t && e.key === "Enter") abrir(t.dataset.id); };
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && $("overlay")) cerrar(); });
+}
+
+async function iniciar() {
+  if (!slug) { $("titulo").textContent = "Página no encontrada"; return; }
+  let datos;
+  try { datos = await rpc("web_inmobiliaria", { p_slug: slug }); }
+  catch { $("titulo").textContent = "No se pudo cargar la página"; $("descripcion").textContent = "Revisa tu conexión e intenta de nuevo."; return; }
+  if (!datos) { $("titulo").textContent = "Página no disponible"; $("descripcion").textContent = "Esta inmobiliaria no tiene su página publicada."; return; }
+  empresa = datos.empresa; props = datos.propiedades || [];
+  if (/^#[0-9a-f]{6}$/i.test(empresa.color || "")) { document.documentElement.style.setProperty("--p", empresa.color); document.documentElement.style.setProperty("--p-dim", empresa.color + "18"); }
+  document.title = `${empresa.titulo} · Propiedades disponibles`;
+  document.querySelector('meta[name="description"]').content = empresa.descripcion || `Propiedades en arriendo y venta de ${empresa.nombre}`;
+  $("titulo").textContent = empresa.titulo;
+  $("descripcion").textContent = empresa.descripcion || "Propiedades disponibles en arriendo y venta.";
+  $("acciones").innerHTML = [
+    empresa.whatsapp && `<a class="btn btn-wa" target="_blank" rel="noopener" href="https://wa.me/${telWA(empresa.whatsapp)}?text=${encodeURIComponent("Hola, vi su página de propiedades y quiero más información.")}">WhatsApp</a>`,
+    empresa.email && `<a class="btn btn-claro" href="mailto:${esc(empresa.email)}">✉️ ${esc(empresa.email)}</a>`].filter(Boolean).join("");
+  $("pie").innerHTML = `© ${new Date().getFullYear()} ${esc(empresa.nombre)} · Página creada con Qipo Arriendos`;
+  const q = new URLSearchParams(location.search);
+  Object.keys(filtro).forEach(k => { if (q.get(k)) filtro[k] = q.get(k); });
+  $("filtros").hidden = false; $("barra").hidden = false;
+  conectar(); pintar();
+  const h = location.hash.match(/^#p=(.+)$/);
+  if (h) abrir(decodeURIComponent(h[1]));
+  // Equivalencia en pesos con la UF del día (referencial)
+  fetch("https://mindicador.cl/api/uf").then(r => r.json()).then(j => { uf = (j.serie && j.serie[0] && j.serie[0].valor) || 0; if (uf) pintar(); }).catch(() => {});
+}
+iniciar();
+</script>
+</body>
+</html>
