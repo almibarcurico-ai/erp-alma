@@ -18,15 +18,30 @@ Estados: ✅ hecho · 🟡 parcial · ⬜ pendiente
 | Documentos | 🟡 | contrato, anexos e inventario generados en HTML/Word/PDF |
 | Interesados | 🟡 | lista básica y ficha compartible de desocupadas |
 | Pagos del SaaS | ⬜ | tabla `cobros_suscripcion`, sin pasarela |
+| Propietarios y liquidaciones | 🟡 | ficha con datos bancarios (solo dueño), comisión % + IVA, liquidación mensual en PDF (inmutable: se paga o se anula), Excel |
+| Planes | ✅ | precios en pesos, límites de unidades y usuarios, funciones por plan validadas en la base (`privado.plan_permite`) |
+| Fotos | ✅ | en Supabase Storage (bucket `fotos`, carpeta por empresa) |
+
+## Planes (precios netos, + IVA; anual = 10 meses)
+
+| | Propietario | Corredor | Profesional | Empresa |
+|---|---|---|---|---|
+| Mensual | $14.900 | $39.900 | $79.900 | $149.900 |
+| Unidades | 10 | 50 | 200 | 600 |
+| Usuarios | 2 | 3 | 8 | 20 |
+| Cobranza, contratos, mapa, multas, abonos, reajustes, IVA, inventario | ✓ | ✓ | ✓ | ✓ |
+| Propietarios y liquidaciones | — | ✓ | ✓ | ✓ |
+| Exportar a Excel | — | — | ✓ | ✓ |
+| Soporte prioritario y migración de datos | — | — | — | ✓ |
+
+Prueba de 14 días con todo habilitado. Más de 600 unidades: Corporativo a convenir (`suscripciones.precio_clp_pactado`).
+Los planes se cambian en la tabla `planes` sin tocar código.
 
 ## Próximos pasos (en orden, cuando se necesiten)
 
-1. **Propietarios y liquidaciones** — ficha de propietario (copropiedad con %), comisión de administración,
-   liquidación mensual en PDF, portal del propietario. Es lo que hace a Qipo útil para corredoras que
-   administran arriendos de terceros.
+1. **Propietarios (siguiente paso)** — copropiedad con %, portal del propietario para ver sus liquidaciones.
 2. **Reajuste IPC y registro de reajustes** — fórmula, fuente, fecha, valor anterior/nuevo y aprobación.
-3. **Fotos y documentos a Supabase Storage** — hoy las fotos van comprimidas dentro de la base; moverlas
-   antes de crecer en número de empresas. URLs firmadas para documentos privados.
+3. **Documentos a Supabase Storage** — URLs firmadas para documentos privados; borrar del bucket las fotos que se quitan.
 4. **Roles granulares** — corredor, cobranza, contador, propietario y arrendatario externos.
 5. **Pruebas en el repo y CI** — aislamiento entre empresas, cálculos de cobro, abonos, reajustes.
 6. **Mantenciones** — solicitudes con fotos, presupuesto, aprobación del propietario y quién asume el gasto.

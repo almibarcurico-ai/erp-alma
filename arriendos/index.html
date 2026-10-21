@@ -288,12 +288,31 @@ function descargarWord(nombre, html) {
 }
 
 
+function descargarCSV(nombre, filas) {
+  const celda = v => { const t = String(v ?? ""); return /[";\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const texto = filas.map(f => f.map(celda).join(";")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["\ufeff" + texto], { type: "text/csv;charset=utf-8" }));
+  a.download = nombre.replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, "").trim() + ".csv"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+
 // ─── DATOS EN SUPABASE ────────────────────────────────────────────────────────
 // La clave pública (anon) puede ir en el navegador: lo que cada usuario puede
 // leer o escribir lo deciden las políticas RLS de la base (supabase/migrations).
 const SUPABASE_URL = "https://xieoddpllbxtwqmhgkui.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhpZW9kZHBsbGJ4dHdxbWhna3VpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI1MzMzNDYsImV4cCI6MjEwODEwOTM0Nn0.odxeZncpiyRthgHVRvXLkDISzbjAT21_G1S_OIOa5XU";
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Fotos en Supabase Storage (bucket "fotos"): <empresa>/<uuid>.jpg, con URL pública no adivinable
+async function subirFoto(empresaId, dataURL) {
+  const blob = await (await fetch(dataURL)).blob();
+  const ruta = `${empresaId}/${uid()}.jpg`;
+  const { error } = await sb.storage.from("fotos").upload(ruta, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
+  if (error) throw error;
+  return sb.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
+}
 
 const num = v => v === "" || v == null || isNaN(Number(v)) ? null : Number(v);
 const local = {
@@ -347,9 +366,9 @@ const vacio = v => v == null ? "" : v;
 
 async function cargarEmpresa(E) {
   const f = t => () => sb.from(t).select("*").eq("empresa_id", E);
-  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs] = await Promise.all([
+  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs, plns, dueños, bancos, liqs] = await Promise.all([
     q(sb.from("empresas").select("*").eq("id", E).single()),
-    q(sb.from("suscripciones").select("*, planes(nombre, max_unidades)").eq("empresa_id", E).maybeSingle()),
+    q(sb.from("suscripciones").select("*, planes(*)").eq("empresa_id", E).maybeSingle()),
     todas(() => f("propiedades")().order("creado")),
     todas(() => f("unidades")().order("orden")),
     todas(f("contratos")),
@@ -360,17 +379,32 @@ async function cargarEmpresa(E) {
     q(f("bitacora")().order("creado", { ascending: false }).limit(1000)),
     q(f("miembros")()),
     q(f("invitaciones")().is("aceptada", null)),
+    q(sb.from("planes").select("*").eq("activo", true).order("orden")),
+    todas(f("propietarios")),
+    q(f("propietarios_banco")()),            // solo el dueño los recibe (RLS)
+    todas(() => f("liquidaciones")().order("creado", { ascending: false })), // ídem
   ]);
+  const plan = sus && sus.planes;
   const propDeUnidad = Object.fromEntries(unis.map(u => [u.id, u.propiedad_id]));
   return {
     empresa: { id: emp.id, nombre: emp.nombre, rut: vacio(emp.rut), direccion: vacio(emp.direccion), email: vacio(emp.email), telefono: vacio(emp.telefono), representante: vacio(emp.representante), rutRep: vacio(emp.rut_rep) },
-    suscripcion: sus ? { planId: sus.plan_id, plan: sus.planes && sus.planes.nombre, maxUnidades: sus.planes && sus.planes.max_unidades, estado: sus.estado, pruebaHasta: sus.prueba_hasta, vigenteHasta: sus.vigente_hasta } : null,
+    suscripcion: sus ? { planId: sus.plan_id, plan: plan && plan.nombre, maxUnidades: plan && plan.max_unidades, maxUsuarios: plan && plan.max_usuarios,
+      funciones: (plan && plan.funciones) || [], precioCLP: sus.precio_clp_pactado ?? (plan && plan.precio_clp), ciclo: sus.ciclo || "mensual",
+      estado: sus.estado, pruebaHasta: sus.prueba_hasta, vigenteHasta: sus.vigente_hasta } : null,
+    planes: plns.map(x => ({ id: x.id, nombre: x.nombre, precioCLP: x.precio_clp, maxUnidades: x.max_unidades, maxUsuarios: x.max_usuarios, funciones: x.funciones || [] })),
+    propietarios: dueños.map(x => {
+      const b = bancos.find(y => y.id === x.id);
+      return { id: x.id, nombre: x.nombre, rut: vacio(x.rut), email: vacio(x.email), telefono: vacio(x.telefono), domicilio: vacio(x.domicilio),
+        representante: vacio(x.representante), rutRep: vacio(x.rut_rep), comisionPct: Number(x.comision_pct), comisionIva: x.comision_iva, notas: vacio(x.notas), banco: b ? b.datos : null };
+    }).sort((a, b) => a.nombre.localeCompare(b.nombre)),
+    liquidaciones: liqs.map(l => ({ id: l.id, propietarioId: l.propietario_id, periodo: l.periodo, detalle: l.detalle, totalCobrado: l.total_cobrado, comision: l.comision,
+      ivaComision: l.iva_comision, descuentos: l.descuentos, total: l.total, estado: l.estado, pagadaEn: l.pagada_en, medio: l.medio || "", emitidaPor: l.emitida_por || "", creado: l.creado })),
     uf: local.get("qipo-uf") || { valor: 39800, fecha: "", auto: true },
     usuarios: mies.map(m => ({ id: m.user_id, nombre: m.nombre, rol: m.rol, activo: m.activo })),
     invitaciones: invs,
     propiedades: props.map(p => ({
       id: p.id, tipo: p.tipo, nombre: p.nombre, direccion: vacio(p.direccion), comuna: vacio(p.comuna), ciudad: vacio(p.ciudad),
-      lat: p.lat, lng: p.lng, rol: vacio(p.rol_sii), notas: vacio(p.notas), arrendador: p.arrendador || {},
+      lat: p.lat, lng: p.lng, rol: vacio(p.rol_sii), notas: vacio(p.notas), arrendador: p.arrendador || {}, propietarioId: p.propietario_id || "",
       unidades: unis.filter(u => u.propiedad_id === p.id).map(u => {
         const vig = cons.find(c => c.unidad_id === u.id && c.vigente);
         return {
@@ -389,12 +423,18 @@ async function cargarEmpresa(E) {
 
 // Convierte el estado de la app en filas por tabla, para comparar y guardar solo lo que cambió
 function filas(st, E) {
-  const t = { empresas: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), abonos: new Map(), documentos: new Map(), interesados: new Map() };
+  const t = { empresas: new Map(), propietarios: new Map(), propietarios_banco: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), abonos: new Map(), documentos: new Map(), interesados: new Map() };
   const e = st.empresa, n = v => v === "" || v == null ? null : v;
   t.empresas.set(e.id, { id: e.id, nombre: e.nombre, rut: n(e.rut), direccion: n(e.direccion), email: n(e.email), telefono: n(e.telefono), representante: n(e.representante), rut_rep: n(e.rutRep) });
+  (st.propietarios || []).forEach(pr => {
+    t.propietarios.set(pr.id, { id: pr.id, empresa_id: E, nombre: pr.nombre, rut: n(pr.rut), email: n(pr.email), telefono: n(pr.telefono), domicilio: n(pr.domicilio),
+      representante: n(pr.representante), rut_rep: n(pr.rutRep), comision_pct: Number(pr.comisionPct) || 0, comision_iva: pr.comisionIva !== false, notas: n(pr.notas) });
+    // null: no se leyó (secretaria) o no existe aún; solo se escribe cuando el dueño lo completa
+    if (pr.banco) t.propietarios_banco.set(pr.id, { id: pr.id, empresa_id: E, datos: pr.banco });
+  });
   st.propiedades.forEach(p => {
     t.propiedades.set(p.id, { id: p.id, empresa_id: E, tipo: p.tipo, nombre: p.nombre, direccion: n(p.direccion), comuna: n(p.comuna), ciudad: n(p.ciudad),
-      lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {} });
+      lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {}, propietario_id: n(p.propietarioId) });
     p.unidades.forEach((u, i) => {
       t.unidades.set(u.id, { id: u.id, empresa_id: E, propiedad_id: p.id, nombre: u.nombre, categoria: u.categoria || "otro", m2: num(u.m2), dormitorios: num(u.dormitorios),
         banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [], orden: i });
@@ -416,7 +456,7 @@ function filas(st, E) {
   return t;
 }
 
-const TABLAS = ["empresas", "propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados"];
+const TABLAS = ["empresas", "propietarios", "propietarios_banco", "propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados"];
 async function sincronizar(prev, next, E) {
   const a = filas(prev, E), b = filas(next, E);
   const creadas = [];
@@ -458,7 +498,7 @@ function conIdsNuevos(d) {
   const mapa = {};
   const id = viejo => mapa[viejo] || (mapa[viejo] = uid());
   const contrato = c => ({ ...c, id: uid(), pagos: (c.pagos || []).map(pg => ({ ...pg, id: uid() })), abonos: (c.abonos || []).map(a => ({ ...a, id: uid() })) });
-  const propiedades = (d.propiedades || []).map(p => ({ ...p, id: id(p.id), arrendador: p.arrendador || {},
+  const propiedades = (d.propiedades || []).map(p => ({ ...p, id: id(p.id), arrendador: p.arrendador || {}, propietarioId: "",
     unidades: (p.unidades || []).map(u => ({ ...u, id: id(u.id), fotos: u.fotos || [], contrato: u.contrato ? contrato(u.contrato) : null, historial: (u.historial || []).map(contrato) })) }));
   const documentos = (d.documentos || []).filter(x => mapa[x.unidadId]).map(x => ({ ...x, id: uid(), propId: mapa[x.propId], unidadId: mapa[x.unidadId] }));
   const interesados = (d.interesados || []).filter(x => mapa[x.unidadId]).map(x => ({ ...x, id: uid(), propId: mapa[x.propId], unidadId: mapa[x.unidadId] }));
@@ -719,7 +759,7 @@ const TIPOS_DOC = {
 
 function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
   const e = st.empresa;
-  const arr = p.arrendador && p.arrendador.nombre ? p.arrendador : { nombre: e.nombre, rut: e.rut, domicilio: e.direccion, representante: e.representante, rutRep: e.rutRep };
+  const arr = arrendadorDe(st, p);
   const c = u.contrato || {};
   const a = c.arrendatario || {};
   const h = esc;
@@ -863,6 +903,18 @@ const Ctx = createContext(null);
 const useApp = () => useContext(Ctx);
 const PERMISOS_SECRETARIA = ["editar", "pagos", "contratos", "comunicar", "interesados"];
 const puede = (user, accion) => !!user && (user.rol === "dueno" || PERMISOS_SECRETARIA.includes(accion));
+// Funciones según el plan (en la prueba se habilita todo). La base valida lo mismo con privado.plan_permite.
+const FUNCIONES_PLAN = { propietarios: "Propietarios y liquidaciones", exportar: "Exportar a Excel", soporte_prioritario: "Soporte prioritario y migración de datos" };
+const planPermite = (st, funcion) => !!st.suscripcion && (st.suscripcion.estado === "prueba" || st.suscripcion.funciones.includes(funcion));
+const planCon = (st, funcion) => (st.planes || []).find(p => p.funciones.includes(funcion));
+// Arrendador de una propiedad: su propietario, el arrendador escrito a mano o la propia empresa
+function arrendadorDe(st, p) {
+  const pr = p.propietarioId && (st.propietarios || []).find(x => x.id === p.propietarioId);
+  if (pr) return { nombre: pr.nombre, rut: pr.rut, domicilio: pr.domicilio, email: pr.email, telefono: pr.telefono, representante: pr.representante, rutRep: pr.rutRep };
+  if (p.arrendador && p.arrendador.nombre) return p.arrendador;
+  const e = st.empresa;
+  return { nombre: e.nombre, rut: e.rut, domicilio: e.direccion, email: e.email, telefono: e.telefono, representante: e.representante, rutRep: e.rutRep };
+}
 
 
 // ─── COMPONENTES BASE ─────────────────────────────────────────────────────────
@@ -1414,13 +1466,21 @@ const contratoVacio = () => ({
 const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, inventario: [], contrato: null });
 
 function Fotos({ fotos, onChange, editable = true }) {
+  const { st, toast } = useApp();
   const [ver, setVer] = useState(null);
+  const [subiendo, setSubiendo] = useState(0);
+  // Se comprimen en el navegador y se suben a Storage; en la base queda solo la URL
   const subir = async e => {
     const files = Array.from(e.target.files || []);
-    const nuevas = [];
-    for (const f of files) { try { nuevas.push(await comprimirImagen(f)); } catch {} }
-    onChange([...(fotos || []), ...nuevas]);
     e.target.value = "";
+    setSubiendo(files.length);
+    const nuevas = [];
+    for (const f of files) {
+      try { nuevas.push(await subirFoto(st.empresa.id, await comprimirImagen(f))); }
+      catch (err) { toast("No se pudo subir una foto: " + mensajeError(err)); }
+      setSubiendo(n => n - 1);
+    }
+    if (nuevas.length) onChange([...(fotos || []), ...nuevas]);
   };
   return (
     <div>
@@ -1433,7 +1493,7 @@ function Fotos({ fotos, onChange, editable = true }) {
         ))}
         {editable && (
           <label style={{ border: `2px dashed ${C.border}`, borderRadius: 8, aspectRatio: "4/3", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.muted, fontSize: 12, textAlign: "center" }}>
-            + Agregar fotos<input type="file" accept="image/*" multiple hidden onChange={subir} />
+            {subiendo ? `Subiendo ${subiendo}…` : "+ Agregar fotos"}<input type="file" accept="image/*" multiple hidden disabled={subiendo > 0} onChange={subir} />
           </label>
         )}
       </div>
@@ -1633,7 +1693,7 @@ function PropiedadForm({ inicial, onClose }) {
   const { st, update, toast, user } = useApp();
   const [p, setP] = useState(() => inicial ? structuredClone(inicial) : {
     id: uid(), tipo: "propiedad", nombre: "", direccion: "", comuna: "", ciudad: "Santiago", lat: null, lng: null, rol: "", notas: "",
-    arrendador: { nombre: "", rut: "", email: "", telefono: "", domicilio: "" }, unidades: [unidadVacia()],
+    arrendador: { nombre: "", rut: "", email: "", telefono: "", domicilio: "" }, propietarioId: "", unidades: [unidadVacia()],
   });
   const [localEdit, setLocalEdit] = useState(null);
   const [buscando, setBuscando] = useState(false);
@@ -1703,14 +1763,24 @@ function PropiedadForm({ inicial, onClose }) {
         posicion={{ lat: p.lat, lng: p.lng, centrar }}
         onElegir={ll => setP(x => ({ ...x, lat: Number(ll.lat.toFixed(6)), lng: Number(ll.lng.toFixed(6)) }))} />
 
-      <div className="section-title">Arrendador / propietario {user.rol === "dueno" ? "" : ""}</div>
-      <div className="muted" style={{ marginBottom: 8 }}>Déjalo vacío si el arrendador es {st.empresa.nombre}.</div>
-      <div className="form-grid">
-        <Campo label="Nombre"><input className="input" value={p.arrendador?.nombre || ""} onChange={e => updArr("nombre", e.target.value)} placeholder={st.empresa.nombre} /></Campo>
-        <Campo label="RUT"><input className="input" value={p.arrendador?.rut || ""} onChange={e => updArr("rut", e.target.value)} /></Campo>
-        <Campo label="Correo"><input className="input" value={p.arrendador?.email || ""} onChange={e => updArr("email", e.target.value)} /></Campo>
-        <Campo label="Teléfono / WhatsApp"><input className="input" value={p.arrendador?.telefono || ""} onChange={e => updArr("telefono", e.target.value)} /></Campo>
-      </div>
+      <div className="section-title">Propietario (arrendador)</div>
+      {(st.propietarios || []).length > 0 && (
+        <div className="form-grid" style={{ marginBottom: 8 }}>
+          <Campo label="Propietario"><select className="select" value={p.propietarioId || ""} onChange={e => upd("propietarioId", e.target.value)}>
+            <option value="">— Escribir los datos a mano —</option>
+            {st.propietarios.map(x => <option key={x.id} value={x.id}>{x.nombre}{x.rut ? ` · ${x.rut}` : ""}</option>)}
+          </select></Campo>
+        </div>
+      )}
+      {!p.propietarioId && <>
+        <div className="muted" style={{ marginBottom: 8 }}>Déjalo vacío si el arrendador es {st.empresa.nombre}.{planPermite(st, "propietarios") && user.rol === "dueno" ? " Si administras propiedades de terceros, regístralos en Propietarios para hacerles liquidaciones." : ""}</div>
+        <div className="form-grid">
+          <Campo label="Nombre"><input className="input" value={p.arrendador?.nombre || ""} onChange={e => updArr("nombre", e.target.value)} placeholder={st.empresa.nombre} /></Campo>
+          <Campo label="RUT"><input className="input" value={p.arrendador?.rut || ""} onChange={e => updArr("rut", e.target.value)} /></Campo>
+          <Campo label="Correo"><input className="input" value={p.arrendador?.email || ""} onChange={e => updArr("email", e.target.value)} /></Campo>
+          <Campo label="Teléfono / WhatsApp"><input className="input" value={p.arrendador?.telefono || ""} onChange={e => updArr("telefono", e.target.value)} /></Campo>
+        </div>
+      </>}
 
       {p.tipo === "propiedad" ? (
         <UnidadEditor value={p.unidades[0]} onChange={u => setP(x => ({ ...x, unidades: [u] }))} />
@@ -1860,7 +1930,7 @@ function ComunicarModal({ p, u, onClose, inicial }) {
   const [destino, setDestino] = useState("arrendatario");
   useEffect(() => { setTexto((lista.find(x => x.id === sel) || lista[0]).texto); }, [sel]);
   const a = u.contrato.arrendatario || {};
-  const arr = p.arrendador && (p.arrendador.telefono || p.arrendador.email) ? p.arrendador : { nombre: st.empresa.nombre, telefono: st.empresa.telefono, email: st.empresa.email };
+  const arr = arrendadorDe(st, p);
   const dest = destino === "arrendatario" ? a : arr;
   const registrar = canalTxt => update(() => {}, `Envió "${m.titulo}" por ${canalTxt} a ${dest.nombre || destino} (${nombreUnidad(p, u)})`);
 
@@ -2034,7 +2104,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
   const c = u.contrato;
   const a = c?.arrendatario || {};
   const esDueno = user.rol === "dueno";
-  const arr = p.arrendador && p.arrendador.nombre ? p.arrendador : { nombre: st.empresa.nombre, rut: st.empresa.rut, email: st.empresa.email, telefono: st.empresa.telefono };
+  const arr = arrendadorDe(st, p);
   const docs = st.documentos.filter(d => d.unidadId === u.id);
   const interes = st.interesados.filter(x => x.unidadId === u.id);
 
@@ -2146,7 +2216,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
               <ServiciosFicha servicios={u.servicios} />
             </div>
             <div>
-              <div className="h2">Arrendador</div>
+              <div className="h2">{p.propietarioId ? "Propietario (arrendador)" : "Arrendador"}</div>
               <dl className="kv"><dt>Nombre</dt><dd>{arr.nombre}</dd>{arr.rut && <><dt>RUT</dt><dd>{arr.rut}</dd></>}</dl>
               <div style={{ marginTop: 8 }}><Contactar tel={arr.telefono} email={arr.email} compacto mensaje={`Hola ${arr.nombre || ""}, te escribo por la propiedad ${nombreUnidad(p, u)} (${p.direccion}).`} asunto={`Propiedad ${nombreUnidad(p, u)}`} /></div>
             </div>
@@ -2415,7 +2485,7 @@ function ContratosView() {
 
 // ─── COBRANZA ─────────────────────────────────────────────────────────────────
 function CobranzaView() {
-  const { st, hoy, uf, abrirFicha, user } = useApp();
+  const { st, hoy, uf, abrirFicha, user, toast } = useApp();
   const [filtro, setFiltro] = useState("");
   const [modal, setModal] = useState(null);
   const filas = listarUnidades(st).filter(x => x.u.contrato).map(x => ({ ...x, r: calcUnidad(x.u, hoy, uf) }))
@@ -2427,6 +2497,7 @@ function CobranzaView() {
     <div className="grid fade-up" style={{ gap: 14 }}>
       <div className="row between">
         <div><div className="h1">Cobranza · {MESES[hoy.getMonth()]} {hoy.getFullYear()}</div><div className="muted">UF hoy {fmtCLP(uf)} · las multas se calculan automáticamente solo donde el dueño las activó</div></div>
+        <button className="btn btn-ghost btn-sm" onClick={() => exportarCobranza(st, hoy, uf, toast)}>⬇️ Excel</button>
       </div>
       <div className="row">
         <button className={"btn btn-sm " + (!filtro ? "btn-primary" : "btn-ghost")} onClick={() => setFiltro("")}>Todos ({Object.values(cuenta).reduce((a, b) => a + b, 0)})</button>
@@ -2464,6 +2535,17 @@ function CobranzaView() {
       {modal && modal.t === "com" && <ComunicarModal p={modal.p} u={modal.u} onClose={() => setModal(null)} />}
     </div>
   );
+}
+
+
+function exportarCobranza(st, hoy, uf, toast) {
+  if (!planPermite(st, "exportar")) { const pl = planCon(st, "exportar"); return toast(`Exportar a Excel está disponible desde el plan ${pl ? pl.nombre : "superior"}.`); }
+  const filas = listarUnidades(st).filter(x => x.u.contrato).map(({ p, u }) => {
+    const c = u.contrato, r = calcUnidad(u, hoy, uf);
+    return [nombreUnidad(p, u), c.arrendatario.nombre, arrendadorDe(st, p).nombre, EST[r.estado].label, r.proxVenc ? fmtFecha(r.proxVenc) : "",
+      fmtRenta(c), Math.round(r.canonCLP), Math.round(aCLP(r.multa, c.moneda, uf)), Math.round(r.deudaCLP), r.abonosPendCLP || 0];
+  });
+  descargarCSV(`cobranza-${toISO(hoy)}`, [["Unidad", "Arrendatario", "Propietario", "Estado", "Próximo vencimiento", "Renta", "Renta en pesos (UF de hoy)", "Multa", "Deuda", "Abonado"], ...filas]);
 }
 
 
@@ -2532,6 +2614,362 @@ function BitacoraView() {
   );
 }
 
+// ─── CORREDORA: PROPIETARIOS Y LIQUIDACIONES ─────────────────────────────────
+function SinPlan({ funcion }) {
+  const { st } = useApp();
+  const pl = planCon(st, funcion);
+  return (
+    <div className="card empty fade-up">
+      <div style={{ fontSize: 30 }}>🔒</div>
+      <div style={{ fontWeight: 700, marginTop: 6 }}>{FUNCIONES_PLAN[funcion]}</div>
+      <div className="muted" style={{ marginTop: 6 }}>Disponible desde el plan {pl ? `${pl.nombre} (${fmtCLP(pl.precioCLP)} + IVA al mes)` : "superior"}. Tu plan actual es {st.suscripcion ? st.suscripcion.plan : "—"}. Revisa los planes en Configuración o contacta a HM Software para cambiarlo.</div>
+    </div>
+  );
+}
+
+const TIPOS_CUENTA = ["Cuenta corriente", "Cuenta vista / RUT", "Cuenta de ahorro"];
+const propietarioVacio = () => ({ id: uid(), nombre: "", rut: "", email: "", telefono: "", domicilio: "", representante: "", rutRep: "", comisionPct: 8, comisionIva: true, notas: "",
+  banco: { banco: "", tipo: TIPOS_CUENTA[0], numero: "", titular: "", rut: "" }, propiedades: [], nuevo: true });
+
+function PropietariosView() {
+  const { st, update, toast } = useApp();
+  const [editar, setEditar] = useState(null);
+  if (!planPermite(st, "propietarios")) return <SinPlan funcion="propietarios" />;
+  const suyas = id => st.propiedades.filter(p => p.propietarioId === id);
+  const borrar = pr => {
+    if (st.liquidaciones.some(l => l.propietarioId === pr.id)) return toast("Tiene liquidaciones emitidas: no se puede eliminar.");
+    if (!confirm(`¿Eliminar a ${pr.nombre}? Sus propiedades quedarán sin propietario asignado.`)) return;
+    update(s => {
+      s.propietarios = s.propietarios.filter(x => x.id !== pr.id);
+      s.propiedades.forEach(p => { if (p.propietarioId === pr.id) p.propietarioId = ""; });
+    }, `Eliminó al propietario ${pr.nombre}`);
+  };
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div className="row between">
+        <div><div className="h1">Propietarios</div><div className="muted">Dueños de las propiedades que administras. Asígnales sus propiedades y su comisión de administración para las liquidaciones mensuales.</div></div>
+        <button className="btn btn-primary" onClick={() => setEditar(propietarioVacio())}>+ Agregar propietario</button>
+      </div>
+      {!st.propietarios.length ? <div className="card empty">Aún no hay propietarios. Agrega el primero y asígnale sus propiedades.</div> : (
+        <div className="table-wrap"><table>
+          <thead><tr><th>Nombre</th><th>RUT</th><th>Propiedades</th><th className="num">Comisión</th><th>Contacto</th><th></th></tr></thead>
+          <tbody>{st.propietarios.map(pr => (
+            <tr key={pr.id}>
+              <td style={{ fontWeight: 600 }}>{pr.nombre}</td>
+              <td>{pr.rut || "—"}</td>
+              <td>{suyas(pr.id).map(p => p.nombre).join(", ") || <span className="muted">sin propiedades</span>}</td>
+              <td className="num">{pr.comisionPct}%{pr.comisionIva !== false ? " + IVA" : ""}</td>
+              <td><Contactar tel={pr.telefono} email={pr.email} compacto asunto="Administración de su propiedad" mensaje={`Hola ${pr.nombre}, `} /></td>
+              <td><div className="row" style={{ flexWrap: "nowrap" }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setEditar({ ...structuredClone(pr), propiedades: suyas(pr.id).map(p => p.id) })}>Editar</button>
+                <button className="btn btn-ghost btn-sm" onClick={() => borrar(pr)}>Eliminar</button>
+              </div></td>
+            </tr>))}</tbody>
+        </table></div>
+      )}
+      {editar && <PropietarioForm inicial={editar} onClose={() => setEditar(null)} />}
+    </div>
+  );
+}
+
+function PropietarioForm({ inicial, onClose }) {
+  const { st, update, toast } = useApp();
+  const [f, setF] = useState(() => ({ ...inicial, banco: inicial.banco || { banco: "", tipo: TIPOS_CUENTA[0], numero: "", titular: "", rut: "" } }));
+  const set = (k, v) => setF(x => ({ ...x, [k]: v }));
+  const setB = (k, v) => setF(x => ({ ...x, banco: { ...x.banco, [k]: v } }));
+  const marcar = id => setF(x => ({ ...x, propiedades: x.propiedades.includes(id) ? x.propiedades.filter(y => y !== id) : [...x.propiedades, id] }));
+  const guardar = () => {
+    const nombre = f.nombre.trim();
+    if (!nombre) return toast("Falta el nombre del propietario");
+    const pct = Number(f.comisionPct);
+    if (f.comisionPct === "" || isNaN(pct) || pct < 0 || pct > 100) return toast("La comisión debe estar entre 0 y 100%");
+    const { propiedades, nuevo, ...datos } = f;
+    update(s => {
+      const pr = { ...datos, nombre, comisionPct: pct };
+      const i = s.propietarios.findIndex(x => x.id === f.id);
+      if (i >= 0) s.propietarios[i] = pr; else s.propietarios.push(pr);
+      s.propietarios.sort((a, b) => a.nombre.localeCompare(b.nombre));
+      s.propiedades.forEach(p => { if (propiedades.includes(p.id)) p.propietarioId = f.id; else if (p.propietarioId === f.id) p.propietarioId = ""; });
+    }, `${nuevo ? "Agregó" : "Editó"} al propietario ${nombre}`);
+    toast("Guardado"); onClose();
+  };
+  const dueñoDe = p => p.propietarioId && p.propietarioId !== f.id ? (st.propietarios.find(x => x.id === p.propietarioId) || {}).nombre : "";
+  return (
+    <Modal titulo={f.nuevo ? "Nuevo propietario" : `Editar: ${inicial.nombre}`} onClose={onClose} ancho={760}
+      pie={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-primary" onClick={guardar}>Guardar</button></>}>
+      <div className="form-grid">
+        <Campo label="Nombre o razón social"><input className="input" value={f.nombre} onChange={e => set("nombre", e.target.value)} autoFocus /></Campo>
+        <Campo label="RUT"><input className="input" value={f.rut} onChange={e => set("rut", e.target.value)} placeholder="12.345.678-9" /></Campo>
+        <Campo label="Correo"><input className="input" type="email" value={f.email} onChange={e => set("email", e.target.value)} /></Campo>
+        <Campo label="Teléfono / WhatsApp"><input className="input" value={f.telefono} onChange={e => set("telefono", e.target.value)} /></Campo>
+        <Campo label="Domicilio"><input className="input" value={f.domicilio} onChange={e => set("domicilio", e.target.value)} /></Campo>
+        <Campo label="Representante (si es sociedad)"><input className="input" value={f.representante} onChange={e => set("representante", e.target.value)} /></Campo>
+        <Campo label="RUT representante"><input className="input" value={f.rutRep} onChange={e => set("rutRep", e.target.value)} /></Campo>
+      </div>
+      <div className="section-title">Comisión de administración</div>
+      <div className="form-grid">
+        <Campo label="Comisión (% de la renta cobrada, sin IVA)"><input className="input" type="number" step="0.1" min="0" max="100" value={f.comisionPct} onChange={e => set("comisionPct", e.target.value)} /></Campo>
+        <Campo label="IVA"><label className="switch" style={{ marginTop: 9 }}><input type="checkbox" checked={f.comisionIva !== false} onChange={e => set("comisionIva", e.target.checked)} />Comisión más IVA (19%)</label></Campo>
+      </div>
+      <div className="section-title">Cuenta para transferirle</div>
+      <div className="form-grid">
+        <Campo label="Banco"><input className="input" value={f.banco.banco} onChange={e => setB("banco", e.target.value)} placeholder="Ej: BancoEstado" /></Campo>
+        <Campo label="Tipo de cuenta"><select className="select" value={f.banco.tipo} onChange={e => setB("tipo", e.target.value)}>{TIPOS_CUENTA.map(t => <option key={t}>{t}</option>)}</select></Campo>
+        <Campo label="Número de cuenta"><input className="input" value={f.banco.numero} onChange={e => setB("numero", e.target.value)} /></Campo>
+        <Campo label="Titular"><input className="input" value={f.banco.titular} onChange={e => setB("titular", e.target.value)} placeholder={f.nombre} /></Campo>
+        <Campo label="RUT titular"><input className="input" value={f.banco.rut} onChange={e => setB("rut", e.target.value)} placeholder={f.rut} /></Campo>
+      </div>
+      <div className="section-title">Propiedades ({f.propiedades.length})</div>
+      {!st.propiedades.length ? <div className="muted">Aún no hay propiedades.</div> : (
+        <div className="grid" style={{ gap: 6, gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+          {st.propiedades.map(p => (
+            <label key={p.id} className="switch" style={{ fontWeight: 400 }}>
+              <input type="checkbox" checked={f.propiedades.includes(p.id)} onChange={() => marcar(p.id)} />
+              {p.nombre}{dueñoDe(p) ? <span className="muted"> (hoy de {dueñoDe(p)})</span> : null}
+            </label>))}
+        </div>
+      )}
+      <div className="section-title">Notas</div>
+      <textarea className="input" rows={2} value={f.notas} onChange={e => set("notas", e.target.value)} />
+    </Modal>
+  );
+}
+
+// Liquidación al propietario: lo efectivamente recibido en el mes (por fecha del pago o abono)
+// en sus propiedades, menos la comisión de administración (+ IVA) y los descuentos.
+// La comisión se calcula sobre la renta sin IVA; las multas van íntegras al propietario.
+function calcLiquidacion(st, pr, periodo, descuentos = []) {
+  const cobros = [];
+  st.propiedades.filter(p => p.propietarioId === pr.id).forEach(p => p.unidades.forEach(u => {
+    [...(u.historial || []), ...(u.contrato ? [u.contrato] : [])].forEach(c => {
+      const base = { unidad: nombreUnidad(p, u), arrendatario: (c.arrendatario || {}).nombre || "" };
+      (c.pagos || []).filter(pg => (pg.fecha || "").slice(0, 7) === periodo).forEach(pg => cobros.push({
+        ...base, ref: "pago:" + pg.id, fecha: pg.fecha, concepto: `Arriendo ${nombrePeriodo(pg.periodo)}`,
+        renta: Math.round(pg.montoCLP || 0), iva: Math.round(pg.ivaCLP || 0), multa: Math.round(pg.multaCLP || 0) }));
+      (c.abonos || []).filter(a => (a.fecha || "").slice(0, 7) === periodo).forEach(a => cobros.push({
+        ...base, ref: "abono:" + a.id, fecha: a.fecha, concepto: `Abono ${nombrePeriodo(a.periodo)}`,
+        renta: Math.round(a.montoCLP), iva: c.iva ? Math.round(a.montoCLP * TASA_IVA / (1 + TASA_IVA)) : 0, multa: 0 }));
+    });
+  }));
+  cobros.sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
+  const totalCobrado = cobros.reduce((t, x) => t + x.renta + x.multa, 0);
+  const baseComision = cobros.reduce((t, x) => t + x.renta - x.iva, 0);
+  const pct = Number(pr.comisionPct) || 0, conIva = pr.comisionIva !== false;
+  const comision = Math.round(baseComision * pct / 100);
+  const ivaComision = conIva ? Math.round(comision * TASA_IVA) : 0;
+  const desc = descuentos.filter(d => d.concepto.trim() || Number(d.monto)).map(d => ({ concepto: d.concepto.trim() || "Descuento", monto: Math.round(Number(d.monto)) || 0 }));
+  const totalDescuentos = desc.reduce((t, d) => t + d.monto, 0);
+  return { cobros, descuentos: desc, pct, comisionIva: conIva, baseComision, totalCobrado, comision, ivaComision, totalDescuentos,
+    total: totalCobrado - comision - ivaComision - totalDescuentos };
+}
+// Valores de una liquidación emitida (lo guardado) o en borrador (lo calculado)
+const valoresLiq = l => l.detalle ? { ...l.detalle, totalCobrado: l.totalCobrado, comision: l.comision, ivaComision: l.ivaComision, totalDescuentos: l.descuentos, total: l.total } : l;
+
+function htmlLiquidacion(st, pr, periodo, v, emitida) {
+  const h = esc, e = st.empresa, b = pr.banco || {};
+  const filas = v.cobros.map(c => `<tr><td>${fmtFecha(c.fecha)}</td><td>${h(c.unidad)}</td><td>${h(c.arrendatario)}</td><td>${h(c.concepto)}${c.multa ? ` + multa ${fmtCLP(c.multa)}` : ""}</td><td style="text-align:right">${fmtCLP(c.renta + c.multa)}</td></tr>`).join("")
+    || `<tr><td colspan="5">Sin cobros recibidos en el período.</td></tr>`;
+  const linea = (t, m, neg) => `<tr><td colspan="4">${t}</td><td style="text-align:right">${neg && m ? "− " : ""}${fmtCLP(m)}</td></tr>`;
+  return `<h2>Liquidación de arriendos · ${nombrePeriodo(periodo)}</h2>
+<p><b>${h(e.nombre)}</b>${e.rut ? ` · RUT ${h(e.rut)}` : ""}${e.direccion ? ` · ${h(e.direccion)}` : ""}</p>
+<table><tr><td>Propietario</td><td><b>${h(pr.nombre)}</b>${pr.rut ? ` · RUT ${h(pr.rut)}` : ""}</td></tr>
+${b.numero ? `<tr><td>Cuenta de destino</td><td>${h(b.banco)} · ${h(b.tipo)} N° ${h(b.numero)} · ${h(b.titular || pr.nombre)}${b.rut || pr.rut ? ` · RUT ${h(b.rut || pr.rut)}` : ""}</td></tr>` : ""}
+<tr><td>Estado</td><td>${emitida ? { emitida: "Emitida", pagada: `Pagada el ${fmtFecha(emitida.pagadaEn)}${emitida.medio ? " · " + h(emitida.medio) : ""}`, anulada: "Anulada" }[emitida.estado] + ` · emitida el ${fmtFecha(emitida.creado.slice(0, 10))}${emitida.emitidaPor ? " por " + h(emitida.emitidaPor) : ""}` : "Borrador (no emitida)"}</td></tr></table>
+<p><br/><b>Cobros recibidos</b></p>
+<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><td><b>Fecha</b></td><td><b>Unidad</b></td><td><b>Arrendatario</b></td><td><b>Concepto</b></td><td style="text-align:right"><b>Monto</b></td></tr>${filas}
+${linea("<b>Total recibido</b>", v.totalCobrado)}
+${linea(`Comisión de administración ${String(v.pct).replace(".", ",")}% sobre ${fmtCLP(v.baseComision)} (renta sin IVA)`, v.comision, true)}
+${v.comisionIva ? linea("IVA de la comisión (19%)", v.ivaComision, true) : ""}
+${v.descuentos.map(d => linea(h(d.concepto), d.monto, true)).join("")}
+<tr><td colspan="4"><b>Total a pagar al propietario</b></td><td style="text-align:right"><b>${fmtCLP(v.total)}</b></td></tr></table>
+<p><br/>La comisión de administración y su IVA se respaldan con la factura de ${h(e.nombre)}.</p>`;
+}
+
+function LiquidacionesView() {
+  const { st, hoy, toast } = useApp();
+  const [periodo, setPeriodo] = useState(() => periodoDe(hoy));
+  const [abierta, setAbierta] = useState(null);
+  if (!planPermite(st, "propietarios")) return <SinPlan funcion="propietarios" />;
+  const meses = Array.from({ length: 13 }, (_, i) => sumarMes(periodoDe(hoy), -i));
+  const filas = st.propietarios.map(pr => {
+    const emitida = st.liquidaciones.find(l => l.propietarioId === pr.id && l.periodo === periodo && l.estado !== "anulada");
+    const calc = calcLiquidacion(st, pr, periodo);
+    const nuevos = emitida ? calc.cobros.filter(c => !(emitida.detalle.cobros || []).some(x => x.ref === c.ref)).length : 0;
+    return { pr, emitida, v: emitida ? valoresLiq(emitida) : calc, nuevos, props: st.propiedades.filter(p => p.propietarioId === pr.id).length };
+  });
+  const suma = k => filas.reduce((t, f) => t + f.v[k], 0);
+  const exportar = () => {
+    if (!planPermite(st, "exportar")) { const pl = planCon(st, "exportar"); return toast(`Exportar a Excel está disponible desde el plan ${pl ? pl.nombre : "superior"}.`); }
+    descargarCSV(`liquidaciones-${periodo}`, [["Propietario", "RUT", "Total recibido", "Comisión", "IVA comisión", "Descuentos", "A pagar", "Estado"],
+      ...filas.map(({ pr, emitida, v }) => [pr.nombre, pr.rut, v.totalCobrado, v.comision, v.ivaComision, v.totalDescuentos, v.total, emitida ? emitida.estado : "sin emitir"])]);
+  };
+  const abiertaPr = abierta && st.propietarios.find(x => x.id === abierta);
+  return (
+    <div className="grid fade-up" style={{ gap: 14 }}>
+      <div className="row between">
+        <div><div className="h1">Liquidaciones</div><div className="muted">Lo recibido en el mes de cada propietario, menos tu comisión de administración y los descuentos. Se basa en la fecha de cada pago o abono.</div></div>
+        <div className="row">
+          <select className="select" style={{ width: 170 }} value={periodo} onChange={e => setPeriodo(e.target.value)}>{meses.map(m => <option key={m} value={m}>{nombrePeriodo(m)}</option>)}</select>
+          <button className="btn btn-ghost btn-sm" onClick={exportar}>⬇️ Excel</button>
+        </div>
+      </div>
+      {!st.propietarios.length ? <div className="card empty">Primero registra tus propietarios y asígnales sus propiedades en el menú Propietarios.</div> : <>
+        <div className="grid g4">
+          <Kpi label="Recibido en el mes" valor={fmtCLP(suma("totalCobrado"))} icono="💵" />
+          <Kpi label="Comisiones (con IVA)" valor={fmtCLP(suma("comision") + suma("ivaComision"))} sub={`neto ${fmtCLP(suma("comision"))}`} icono="🏢" color={C.success} />
+          <Kpi label="A pagar a propietarios" valor={fmtCLP(suma("total"))} icono="👤" />
+          <Kpi label="Pendientes de pago" valor={filas.filter(f => !f.emitida || f.emitida.estado === "emitida").filter(f => f.v.totalCobrado).length} icono="⏳" />
+        </div>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Propietario</th><th className="num">Propiedades</th><th className="num">Recibido</th><th className="num">Comisión + IVA</th><th className="num">Descuentos</th><th className="num">A pagar</th><th>Estado</th><th></th></tr></thead>
+          <tbody>{filas.map(({ pr, emitida, v, nuevos, props }) => (
+            <tr key={pr.id} className="click" onClick={() => setAbierta(pr.id)}>
+              <td style={{ fontWeight: 600 }}>{pr.nombre}</td>
+              <td className="num">{props}</td>
+              <td className="num">{fmtCLP(v.totalCobrado)}</td>
+              <td className="num">{fmtCLP(v.comision + v.ivaComision)}</td>
+              <td className="num">{v.totalDescuentos ? fmtCLP(v.totalDescuentos) : "—"}</td>
+              <td className="num" style={{ fontWeight: 700 }}>{fmtCLP(v.total)}</td>
+              <td>{!emitida ? <span className="tag" style={{ background: C.bg, color: C.muted }}>Sin emitir</span>
+                : emitida.estado === "pagada" ? <span className="tag" style={{ background: C.successBg, color: C.success }}>Pagada {fmtFecha(emitida.pagadaEn)}</span>
+                : <span className="tag" style={{ background: C.warningBg, color: C.warning }}>Emitida · por pagar</span>}
+                {nuevos > 0 && <div style={{ fontSize: 11.5, color: C.danger, marginTop: 3 }}>{nuevos} cobro{nuevos > 1 ? "s" : ""} nuevo{nuevos > 1 ? "s" : ""} sin liquidar</div>}</td>
+              <td><button className="btn btn-ghost btn-sm">{emitida ? "Ver" : "Liquidar"}</button></td>
+            </tr>))}</tbody>
+        </table></div>
+      </>}
+      {abiertaPr && <LiquidacionModal pr={abiertaPr} periodo={periodo} onClose={() => setAbierta(null)} />}
+    </div>
+  );
+}
+
+function LiquidacionModal({ pr, periodo, onClose }) {
+  const { st, user, toast, recargar, hoy } = useApp();
+  const emitida = st.liquidaciones.find(l => l.propietarioId === pr.id && l.periodo === periodo && l.estado !== "anulada");
+  const [descuentos, setDescuentos] = useState([]);
+  const [pago, setPago] = useState({ fecha: toISO(hoy), medio: "Transferencia" });
+  const [enviando, setEnviando] = useState(false);
+  const calc = calcLiquidacion(st, pr, periodo, descuentos);
+  const v = emitida ? valoresLiq(emitida) : calc;
+  const nuevos = emitida ? calc.cobros.filter(c => !(emitida.detalle.cobros || []).some(x => x.ref === c.ref)).length : 0;
+  const E = st.empresa.id;
+  const accion = async (fn, ok, registro) => {
+    setEnviando(true);
+    try {
+      await fn();
+      await q(sb.from("bitacora").insert({ empresa_id: E, user_id: user.id, usuario: user.nombre, accion: registro }));
+      toast(ok); await recargar();
+    } catch (e) { toast(mensajeError(e)); }
+    setEnviando(false);
+  };
+  const emitir = () => {
+    if (!calc.cobros.length && !confirm("No hay cobros recibidos en el período. ¿Emitir igual?")) return;
+    const { cobros, descuentos: desc, pct, comisionIva, baseComision } = calc;
+    accion(() => q(sb.from("liquidaciones").insert({ id: uid(), empresa_id: E, propietario_id: pr.id, periodo, detalle: { cobros, descuentos: desc, pct, comisionIva, baseComision },
+      total_cobrado: calc.totalCobrado, comision: calc.comision, iva_comision: calc.ivaComision, descuentos: calc.totalDescuentos, total: calc.total, emitida_por: user.nombre })),
+      "Liquidación emitida", `Emitió la liquidación de ${pr.nombre} de ${nombrePeriodo(periodo)} por ${fmtCLP(calc.total)}`);
+  };
+  const marcarPagada = () => {
+    if (!pago.fecha) return toast("Indica la fecha del pago");
+    accion(() => q(sb.from("liquidaciones").update({ estado: "pagada", pagada_en: pago.fecha, medio: pago.medio || null }).eq("id", emitida.id)),
+      "Liquidación marcada como pagada", `Pagó la liquidación de ${pr.nombre} de ${nombrePeriodo(periodo)} (${fmtCLP(emitida.total)})`);
+  };
+  const anular = () => {
+    if (!confirm("¿Anular esta liquidación? Queda registrada como anulada y podrás emitir una nueva.")) return;
+    accion(() => q(sb.from("liquidaciones").update({ estado: "anulada" }).eq("id", emitida.id)),
+      "Liquidación anulada", `Anuló la liquidación de ${pr.nombre} de ${nombrePeriodo(periodo)}`);
+  };
+  const updDesc = (i, k, val) => setDescuentos(d => d.map((x, j) => j === i ? { ...x, [k]: val } : x));
+  const texto = `Hola ${pr.nombre}, te enviamos la liquidación de arriendos de ${nombrePeriodo(periodo)}: recibido ${fmtCLP(v.totalCobrado)}, comisión ${fmtCLP(v.comision + v.ivaComision)}${v.totalDescuentos ? `, descuentos ${fmtCLP(v.totalDescuentos)}` : ""}. Total a pagar: ${fmtCLP(v.total)}.${emitida && emitida.estado === "pagada" ? ` Transferido el ${fmtFecha(emitida.pagadaEn)}.` : ""}`;
+  return (
+    <Modal titulo={`Liquidación · ${pr.nombre} · ${nombrePeriodo(periodo)}`} onClose={onClose} ancho={820}
+      pie={<>
+        <button className="btn btn-ghost" onClick={() => imprimirHTML(`Liquidación ${pr.nombre} ${nombrePeriodo(periodo)}`, htmlLiquidacion(st, pr, periodo, v, emitida))}>🖨️ PDF</button>
+        {!emitida && <button className="btn btn-primary" disabled={enviando} onClick={emitir}>Emitir liquidación</button>}
+        {emitida && <button className="btn btn-ghost" disabled={enviando} onClick={anular}>Anular</button>}
+      </>}>
+      {nuevos > 0 && <div className="card" style={{ background: C.warningBg, padding: 10, marginBottom: 12, fontSize: 12.5 }}>Hay {nuevos} cobro{nuevos > 1 ? "s" : ""} de este mes registrado{nuevos > 1 ? "s" : ""} después de emitirla. Anúlala y emite una nueva para incluirlo{nuevos > 1 ? "s" : ""}.</div>}
+      <div className="table-wrap"><table>
+        <thead><tr><th>Fecha</th><th>Unidad</th><th>Arrendatario</th><th>Concepto</th><th className="num">Monto</th></tr></thead>
+        <tbody>
+          {!v.cobros.length && <tr><td colSpan={5} className="muted">Sin cobros recibidos en {nombrePeriodo(periodo)}.</td></tr>}
+          {v.cobros.map(c => <tr key={c.ref}><td>{fmtFecha(c.fecha)}</td><td>{c.unidad}</td><td>{c.arrendatario}</td><td>{c.concepto}{c.multa ? <span className="muted"> + multa {fmtCLP(c.multa)}</span> : null}</td><td className="num">{fmtCLP(c.renta + c.multa)}</td></tr>)}
+        </tbody>
+      </table></div>
+      <dl className="kv" style={{ marginTop: 14 }}>
+        <dt>Total recibido</dt><dd>{fmtCLP(v.totalCobrado)}</dd>
+        <dt>Comisión {String(v.pct).replace(".", ",")}%</dt><dd>− {fmtCLP(v.comision)} <span className="muted">(sobre {fmtCLP(v.baseComision)}, renta sin IVA)</span></dd>
+        {v.comisionIva && <><dt>IVA comisión</dt><dd>− {fmtCLP(v.ivaComision)}</dd></>}
+        {emitida && v.descuentos.map((d, i) => <React.Fragment key={i}><dt>{d.concepto}</dt><dd>− {fmtCLP(d.monto)}</dd></React.Fragment>)}
+      </dl>
+      {!emitida && (
+        <div style={{ marginTop: 12 }}>
+          <div className="row between"><div className="label">Descuentos (mantenciones, gastos autorizados, anticipos)</div>
+            <button className="btn btn-ghost btn-sm" onClick={() => setDescuentos(d => [...d, { concepto: "", monto: "" }])}>+ Agregar descuento</button></div>
+          {descuentos.map((d, i) => (
+            <div key={i} className="row" style={{ marginTop: 6, flexWrap: "nowrap" }}>
+              <input className="input" placeholder="Concepto" value={d.concepto} onChange={e => updDesc(i, "concepto", e.target.value)} />
+              <input className="input" style={{ width: 150 }} type="number" placeholder="Monto $" value={d.monto} onChange={e => updDesc(i, "monto", e.target.value)} />
+              <button className="btn btn-ghost btn-sm" onClick={() => setDescuentos(x => x.filter((_, j) => j !== i))}>✕</button>
+            </div>))}
+        </div>
+      )}
+      <div className="card" style={{ marginTop: 14, padding: 14, background: C.blueDim }}>
+        <div className="row between"><b>Total a pagar al propietario</b><b style={{ fontSize: 20 }}>{fmtCLP(v.total)}</b></div>
+        {pr.banco && pr.banco.numero && <div className="muted" style={{ marginTop: 4 }}>{pr.banco.banco} · {pr.banco.tipo} N° {pr.banco.numero} · {pr.banco.titular || pr.nombre}</div>}
+      </div>
+      {emitida && emitida.estado === "emitida" && (
+        <div style={{ marginTop: 14 }}>
+          <div className="label">Registrar la transferencia al propietario</div>
+          <div className="row" style={{ flexWrap: "nowrap" }}>
+            <input className="input" type="date" style={{ width: 170 }} value={pago.fecha} onChange={e => setPago({ ...pago, fecha: e.target.value })} />
+            <input className="input" placeholder="Medio" value={pago.medio} onChange={e => setPago({ ...pago, medio: e.target.value })} />
+            <button className="btn btn-primary" disabled={enviando} onClick={marcarPagada}>Marcar pagada</button>
+          </div>
+        </div>
+      )}
+      {emitida && emitida.estado === "pagada" && <div className="muted" style={{ marginTop: 10 }}>Pagada el {fmtFecha(emitida.pagadaEn)}{emitida.medio ? ` · ${emitida.medio}` : ""}.</div>}
+      {emitida && <div style={{ marginTop: 12 }}><Contactar tel={pr.telefono} email={pr.email} asunto={`Liquidación de arriendos ${nombrePeriodo(periodo)}`} mensaje={texto} /></div>}
+    </Modal>
+  );
+}
+
+
+// Precios en pesos + IVA; pago anual = 10 meses. Los planes se editan en la tabla "planes" (sin tocar código).
+const INCLUIDO_TODOS = "Cobranza, mapa, contratos y anexos, multas, abonos, reajustes, IVA, inventario con fotos y desocupadas";
+function PlanesCard() {
+  const { st } = useApp();
+  const sus = st.suscripcion;
+  const usuarios = st.usuarios.filter(u => u.activo !== false).length + st.invitaciones.length;
+  const celda = pl => pl.id === sus.planId ? { background: C.blueDim } : null;
+  const fila = (titulo, f) => <tr><td>{titulo}</td>{st.planes.map(pl => <td key={pl.id} className="num" style={celda(pl)}>{f(pl)}</td>)}</tr>;
+  return (
+    <div className="card">
+      <div className="h2">Suscripción y planes</div>
+      <dl className="kv">
+        <dt>Tu plan</dt><dd>{sus.plan}{sus.precioCLP ? ` · ${fmtCLP(sus.precioCLP)} + IVA ${sus.ciclo === "anual" ? "al año" : "al mes"}` : ""}</dd>
+        <dt>Estado</dt><dd>{{ prueba: "Prueba (todas las funciones habilitadas)", activa: "Activa", morosa: "Morosa", suspendida: "Suspendida", cancelada: "Cancelada" }[sus.estado] || sus.estado}{sus.estado === "prueba" && sus.pruebaHasta ? ` hasta el ${fmtFecha(sus.pruebaHasta)}` : ""}</dd>
+        <dt>Unidades</dt><dd>{listarUnidades(st).length}{sus.maxUnidades ? ` de ${sus.maxUnidades}` : ""}</dd>
+        <dt>Usuarios</dt><dd>{usuarios}{sus.maxUsuarios ? ` de ${sus.maxUsuarios}` : ""} <span className="muted">(incluye invitaciones pendientes)</span></dd>
+      </dl>
+      {st.planes.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 14 }}><table>
+          <thead><tr><th></th>{st.planes.map(pl => <th key={pl.id} className="num" style={celda(pl)}>{pl.nombre}{pl.id === sus.planId ? " · tu plan" : ""}</th>)}</tr></thead>
+          <tbody>
+            {fila("Precio mensual (+ IVA)", pl => <b>{fmtCLP(pl.precioCLP)}</b>)}
+            {fila("Pago anual (2 meses gratis)", pl => fmtCLP(pl.precioCLP * 10))}
+            {fila("Unidades (casas, deptos, locales)", pl => pl.maxUnidades ? `hasta ${pl.maxUnidades}` : "sin límite")}
+            {fila("Usuarios", pl => pl.maxUsuarios ? `hasta ${pl.maxUsuarios}` : "sin límite")}
+            {fila(INCLUIDO_TODOS, () => "✓")}
+            {Object.entries(FUNCIONES_PLAN).map(([k, l]) => <React.Fragment key={k}>{fila(l, pl => pl.funciones.includes(k) ? "✓" : <span className="muted">—</span>)}</React.Fragment>)}
+          </tbody>
+        </table></div>
+      )}
+      <div className="muted" style={{ marginTop: 8 }}>Prueba gratis de 14 días con todo habilitado. Más de 600 unidades: plan Corporativo a convenir. Para cambiar de plan o pagar la suscripción, contacta a HM Software.</div>
+    </div>
+  );
+}
+
 function ConfigView() {
   const { st, update, user, toast, recargarUF, recargar } = useApp();
   const [emp, setEmp] = useState(st.empresa);
@@ -2554,6 +2992,8 @@ function ConfigView() {
   const invitar = () => {
     const email = inv.email.trim().toLowerCase();
     if (!inv.nombre.trim() || !/^\S+@\S+\.\S+$/.test(email)) return toast("Ingresa nombre y un correo válido");
+    const maxU = sus && sus.maxUsuarios;
+    if (maxU && st.usuarios.filter(u => u.activo !== false).length + st.invitaciones.length >= maxU) return toast(`Tu plan ${sus.plan} permite hasta ${maxU} usuarios. Revisa los planes más abajo para invitar a más.`);
     accion(() => q(sb.from("invitaciones").insert({ empresa_id: E, email, nombre: inv.nombre.trim(), rol: inv.rol })),
       "Invitación creada", `Invitó a ${inv.nombre.trim()} (${email}) como ${inv.rol}`);
     setInv({ nombre: "", email: "", rol: "secretaria" });
@@ -2592,17 +3032,7 @@ function ConfigView() {
     <div className="grid fade-up" style={{ gap: 16 }}>
       <div className="h1">Configuración</div>
 
-      {sus && (
-        <div className="card">
-          <div className="h2">Suscripción</div>
-          <dl className="kv">
-            <dt>Plan</dt><dd>{sus.plan}{sus.maxUnidades ? ` (hasta ${sus.maxUnidades} unidades)` : ""}</dd>
-            <dt>Estado</dt><dd>{{ prueba: "Prueba", activa: "Activa", morosa: "Morosa", suspendida: "Suspendida", cancelada: "Cancelada" }[sus.estado] || sus.estado}{sus.estado === "prueba" && sus.pruebaHasta ? ` hasta el ${fmtFecha(sus.pruebaHasta)}` : ""}</dd>
-            <dt>Unidades en uso</dt><dd>{listarUnidades(st).length}</dd>
-          </dl>
-          <div className="muted" style={{ marginTop: 8 }}>Para cambiar de plan o pagar la suscripción, contacta a HM Software.</div>
-        </div>
-      )}
+      {sus && <PlanesCard />}
 
       <div className="card">
         <div className="h2">Datos de la empresa (arrendador por defecto)</div>
@@ -2683,10 +3113,12 @@ const VISTAS = [
   { id: "cobranza", label: "Cobranza", icono: "💵", grupo: "Gestión" },
   { id: "disponibles", label: "Desocupadas", icono: "🏷️", grupo: "Gestión" },
   { id: "contratos", label: "Contratos y anexos", icono: "📄", grupo: "Gestión" },
+  { id: "propietarios", label: "Propietarios", icono: "👤", grupo: "Corredora", soloDueno: true },
+  { id: "liquidaciones", label: "Liquidaciones", icono: "🧮", grupo: "Corredora", soloDueno: true },
   { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloDueno: true },
   { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloDueno: true },
 ];
-const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados", "miembros"];
+const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados", "miembros", "propietarios", "liquidaciones"];
 
 function Cargando({ texto = "Cargando…", error, onReintentar }) {
   return (
@@ -2828,7 +3260,7 @@ function App() {
   const vistas = VISTAS.filter(v => !v.soloDueno || user.rol === "dueno");
   const grupos = [...new Set(vistas.map(v => v.grupo))];
   const vistaOk = vistas.some(v => v.id === vista) ? vista : "panel";
-  const Vista = { panel: PanelView, mapa: MapaView, propiedades: PropiedadesView, cobranza: CobranzaView, disponibles: DisponiblesView, contratos: ContratosView, bitacora: BitacoraView, config: ConfigView }[vistaOk];
+  const Vista = { panel: PanelView, mapa: MapaView, propiedades: PropiedadesView, cobranza: CobranzaView, disponibles: DisponiblesView, contratos: ContratosView, propietarios: PropietariosView, liquidaciones: LiquidacionesView, bitacora: BitacoraView, config: ConfigView }[vistaOk];
   const sus = st.suscripcion;
   const bloqueada = sus && ["suspendida", "cancelada"].includes(sus.estado);
 
