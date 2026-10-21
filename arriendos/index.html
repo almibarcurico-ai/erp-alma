@@ -352,7 +352,7 @@ async function cargarEmpresa(E) {
         const vig = cons.find(c => c.unidad_id === u.id && c.vigente);
         return {
           id: u.id, nombre: u.nombre, categoria: u.categoria, m2: vacio(u.m2), dormitorios: vacio(u.dormitorios), banos: vacio(u.banos),
-          estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [],
+          estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [], servicios: u.servicios || {},
           contrato: vig ? aContrato(vig, pags) : null,
           historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags)),
         };
@@ -374,7 +374,7 @@ function filas(st, E) {
       lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {} });
     p.unidades.forEach((u, i) => {
       t.unidades.set(u.id, { id: u.id, empresa_id: E, propiedad_id: p.id, nombre: u.nombre, categoria: u.categoria || "otro", m2: num(u.m2), dormitorios: num(u.dormitorios),
-        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], orden: i });
+        banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, orden: i });
       const contratos = [...(u.historial || []).map(c => [c, false]), ...(u.contrato ? [[u.contrato, true]] : [])];
       contratos.forEach(([c, vigente]) => {
         t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
@@ -1332,7 +1332,7 @@ const contratoVacio = () => ({
   multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
   pagos: [], multasCondonadas: {},
 });
-const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], contrato: null });
+const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, contrato: null });
 
 function Fotos({ fotos, onChange, editable = true }) {
   const [ver, setVer] = useState(null);
@@ -1361,6 +1361,84 @@ function Fotos({ fotos, onChange, editable = true }) {
       {!editable && !(fotos || []).length && <div className="muted">Sin fotos.</div>}
       {ver && ReactDOM.createPortal(<div className="overlay" style={{ alignItems: "center" }} onClick={() => setVer(null)}><img src={ver} style={{ maxWidth: "95%", maxHeight: "90vh", borderRadius: 10 }} alt="" /></div>, document.body)}
     </div>
+  );
+}
+
+// ─── SERVICIOS (luz, agua y gastos comunes) ──────────────────────────────────
+const SERVICIOS = {
+  luz:  { titulo: "Luz", icono: "💡", empresas: ["CGE", "Enel", "Chilquinta", "Saesa", "Frontel", "Edelmag", "Luz Linares", "Luz Parral"] },
+  agua: { titulo: "Agua", icono: "💧", empresas: ["Aguas Andinas", "Nuevosur", "Essbio", "Esval", "Aguas del Valle", "Aguas Araucanía", "Smapa", "Aguas Antofagasta"] },
+};
+
+function ServiciosEditor({ value, onChange }) {
+  const sv = value || {};
+  const set = (k, v) => onChange({ ...sv, [k]: v });
+  const gc = sv.gastoComun || {};
+  const setGC = (k, v) => set("gastoComun", { ...gc, [k]: v });
+  return (
+    <div className="grid" style={{ gap: 14 }}>
+      {Object.entries(SERVICIOS).map(([k, def]) => {
+        const lista = sv[k] || [];
+        const setItem = (i, campo, v) => set(k, lista.map((x, j) => j === i ? { ...x, [campo]: v } : x));
+        return (
+          <div key={k}>
+            <div className="row between" style={{ marginBottom: 6 }}>
+              <span className="label" style={{ margin: 0 }}>{def.icono} {def.titulo}</span>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => set(k, [...lista, { empresa: "", cliente: "" }])}>+ Agregar número de cliente</button>
+            </div>
+            {!lista.length && <div className="muted">Sin números de cliente.</div>}
+            {lista.map((x, i) => (
+              <div key={i} className="row" style={{ marginBottom: 6, flexWrap: "nowrap" }}>
+                <input className="input" style={{ flex: 1 }} list={"empresas-" + k} placeholder="Empresa" value={x.empresa || ""} onChange={e => setItem(i, "empresa", e.target.value)} />
+                <input className="input" style={{ flex: 1 }} placeholder="N° de cliente" value={x.cliente || ""} onChange={e => setItem(i, "cliente", e.target.value)} />
+                <button type="button" className="icon-btn" title="Quitar" onClick={() => set(k, lista.filter((_, j) => j !== i))}>✕</button>
+              </div>
+            ))}
+            <datalist id={"empresas-" + k}>{def.empresas.map(e => <option key={e} value={e} />)}</datalist>
+          </div>
+        );
+      })}
+      <div className="card" style={{ padding: 14, background: gc.aplica ? C.blueDim : C.bg }}>
+        <label className="switch"><input type="checkbox" checked={!!gc.aplica} onChange={e => setGC("aplica", e.target.checked)} />🏘️ En condominio (con gastos comunes)</label>
+        {gc.aplica && (
+          <div className="form-grid" style={{ marginTop: 10 }}>
+            <Campo label="Administración"><input className="input" value={gc.administracion || ""} onChange={e => setGC("administracion", e.target.value)} placeholder="Ej: Administración Edificio Los Robles" /></Campo>
+            <Campo label="Contacto (teléfono o correo)"><input className="input" value={gc.contacto || ""} onChange={e => setGC("contacto", e.target.value)} /></Campo>
+            <Campo label="N° de unidad o cliente"><input className="input" value={gc.cliente || ""} onChange={e => setGC("cliente", e.target.value)} placeholder="Ej: Depto 1203" /></Campo>
+            <Campo label="Monto aproximado mensual ($)"><input className="input" type="number" value={gc.montoAprox || ""} onChange={e => setGC("montoAprox", e.target.value)} /></Campo>
+            <Campo label="Lo paga">
+              <select className="select" value={gc.paga || "arrendatario"} onChange={e => setGC("paga", e.target.value)}>
+                <option value="arrendatario">Arrendatario</option><option value="arrendador">Arrendador</option>
+              </select>
+            </Campo>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ServiciosFicha({ servicios }) {
+  const sv = servicios || {};
+  const gc = sv.gastoComun || {};
+  const copiar = t => { try { navigator.clipboard.writeText(t); } catch {} };
+  const filas = Object.entries(SERVICIOS).flatMap(([k, def]) => (sv[k] || []).filter(x => x.cliente || x.empresa).map((x, i) => ({ k: k + i, def, x })));
+  if (!filas.length && !gc.aplica) return <div className="muted">Sin servicios registrados. Agrégalos con ✏️ Editar.</div>;
+  return (
+    <dl className="kv">
+      {filas.map(({ k, def, x }) => (
+        <React.Fragment key={k}>
+          <dt>{def.icono} {def.titulo}{x.empresa ? ` · ${x.empresa}` : ""}</dt>
+          <dd className="row" style={{ gap: 6 }}><span className="mono" style={{ fontSize: 12.5 }}>{x.cliente || "—"}</span>{x.cliente && <button className="btn btn-ghost btn-sm" style={{ padding: "1px 7px" }} onClick={() => copiar(x.cliente)} title="Copiar número">⧉</button>}</dd>
+        </React.Fragment>
+      ))}
+      {gc.aplica && <>
+        <dt>🏘️ Gastos comunes</dt>
+        <dd>{gc.montoAprox ? `≈ ${fmtCLP(gc.montoAprox)} · ` : ""}paga el {gc.paga === "arrendador" ? "arrendador" : "arrendatario"}</dd>
+        {gc.administracion && <><dt>Administración</dt><dd>{gc.administracion}{gc.cliente ? ` · ${gc.cliente}` : ""}</dd></>}
+        {gc.contacto && <><dt>Contacto</dt><dd>{gc.contacto}</dd></>}
+      </>}
+    </dl>
   );
 }
 
@@ -1393,6 +1471,8 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
       </div>
       <div className="section-title">Fotos</div>
       <Fotos fotos={u.fotos} onChange={f => upd("fotos", f)} />
+      <div className="section-title">Servicios: luz, agua y gastos comunes</div>
+      <ServiciosEditor value={u.servicios} onChange={v => upd("servicios", v)} />
 
       <div className="section-title row between">
         <span>Arriendo</span>
@@ -1913,7 +1993,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
               <div className="h2">Datos de la propiedad</div>
               <dl className="kv">
                 <dt>Tipo</dt><dd>{CATEGORIAS[u.categoria]}{p.tipo === "centro" ? ` en ${p.nombre}` : ""}</dd>
-                <dt>Dirección</dt><dd>{p.direccion}, {p.comuna}</dd>
+                {(p.direccion || p.comuna) && <><dt>Dirección</dt><dd>{[p.direccion, p.comuna].filter(Boolean).join(", ")}</dd></>}
                 {u.m2 ? <><dt>Superficie</dt><dd>{u.m2} m²</dd></> : null}
                 {u.dormitorios ? <><dt>Dormitorios</dt><dd>{u.dormitorios}</dd></> : null}
                 {u.banos ? <><dt>Baños</dt><dd>{u.banos}</dd></> : null}
@@ -1942,6 +2022,10 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                 </div>
               </div>
             )}
+            <div>
+              <div className="h2">Servicios</div>
+              <ServiciosFicha servicios={u.servicios} />
+            </div>
             <div>
               <div className="h2">Arrendador</div>
               <dl className="kv"><dt>Nombre</dt><dd>{arr.nombre}</dd>{arr.rut && <><dt>RUT</dt><dd>{arr.rut}</dd></>}</dl>
