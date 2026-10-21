@@ -3007,7 +3007,7 @@ function WebCard() {
         <div className="h2">Página web de la inmobiliaria</div>
         <label className="switch"><input type="checkbox" checked={!!w.activa} onChange={e => set("activa", e.target.checked)} />Publicada</label>
       </div>
-      <div className="muted" style={{ marginBottom: 10 }}>Muestra al público tus propiedades desocupadas ({libres} hoy) con fotos, características, precio y filtros. Las arrendadas se ocultan solas; la dirección exacta y los datos de arrendatarios y propietarios nunca se publican. Los contactos del formulario llegan como interesados a la ficha de cada propiedad.</div>
+      <div className="muted" style={{ marginBottom: 10 }}>Muestra al público tus propiedades con fotos, características, precio y filtros: las desocupadas ({libres} hoy) disponibles para contactar y las arrendadas con una franja roja de "No disponible". La dirección exacta y los datos de arrendatarios y propietarios nunca se publican. Los contactos del formulario llegan como interesados a la ficha de cada propiedad.</div>
       <div className="form-grid">
         <Campo label="Dirección de la página"><input className="input" value={w.slug} onChange={e => set("slug", e.target.value)} onBlur={() => set("slug", aSlug(w.slug))} placeholder="mi-inmobiliaria" /></Campo>
         <Campo label="Título"><input className="input" value={w.titulo} onChange={e => set("titulo", e.target.value)} placeholder={st.empresa.nombre} /></Campo>

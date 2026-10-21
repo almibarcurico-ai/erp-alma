@@ -43,6 +43,11 @@
     .chips { position: absolute; top: 10px; left: 10px; display: flex; gap: 6px; }
     .chip { background: rgba(255,255,255,.95); color: var(--text); font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 99px; }
     .chip.op { background: var(--p); color: #fff; }
+    .franja { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); background: rgba(220,38,38,.92); color: #fff; text-align: center; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; padding: 9px 0; font-size: 14px; box-shadow: 0 4px 14px rgba(0,0,0,.25); z-index: 1; }
+    .galeria .franja { font-size: 20px; padding: 14px 0; }
+    .no-disp .portada img, .galeria.no-disp img { filter: grayscale(.45) brightness(.8); }
+    .no-disp .precio { color: #DC2626; }
+    .check { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--dim); cursor: pointer; }
     .nfotos { position: absolute; bottom: 10px; right: 10px; background: rgba(10,22,40,.65); color: #fff; font-size: 11.5px; padding: 3px 8px; border-radius: 99px; }
     .cuerpo { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
     .titulo { font-weight: 700; font-size: 15px; }
@@ -114,6 +119,7 @@
     <div class="barra" id="barra" hidden>
       <div class="cuenta" id="cuenta"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <label class="check"><input type="checkbox" id="f-solo"/> Solo disponibles</label>
         <button class="btn" id="limpiar">Limpiar filtros</button>
         <div class="segmento" style="margin:0" id="seg-vista"></div>
       </div>
@@ -142,7 +148,9 @@ const telWA = t => { let d = String(t || "").replace(/\D/g, ""); if (d.length ==
 const slug = (location.pathname.match(/\/web\/([a-z0-9-]+)\/?$/i) || [])[1] || new URLSearchParams(location.search).get("e") || "";
 
 let empresa = null, props = [], uf = 0, vista = "lista", mapa = null;
-const filtro = { operacion: "", tipo: "", ciudad: "", comuna: "", dorm: "", banos: "", min: "", max: "", m2: "", texto: "" };
+const filtro = { operacion: "", tipo: "", ciudad: "", comuna: "", dorm: "", banos: "", min: "", max: "", m2: "", texto: "", solo: "" };
+const disponible = p => p.disponible !== false;
+const FRANJA = `<div class="franja">No disponible</div>`;
 
 async function rpc(fn, body) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
@@ -186,6 +194,7 @@ function filtradas() {
     (!filtro.m2 || Number(p.m2) >= Number(filtro.m2)) &&
     (!filtro.min || precioDe(p) >= Number(filtro.min)) &&
     (!filtro.max || (precioDe(p) && precioDe(p) <= Number(filtro.max))) &&
+    (!filtro.solo || disponible(p)) &&
     (!txt || [p.propiedad, p.unidad, p.descripcion, p.comuna, p.ciudad, CATEGORIAS[p.categoria]].join(" ").toLowerCase().includes(txt)));
 }
 
@@ -202,23 +211,25 @@ function pintarFiltros() {
   $("f-comuna").innerHTML = opciones(comunas.map(c => [c, c]), "Todas");
   for (const [k, id] of [["tipo", "f-tipo"], ["ciudad", "f-ciudad"], ["comuna", "f-comuna"], ["dorm", "f-dorm"], ["banos", "f-banos"], ["min", "f-min"], ["max", "f-max"], ["m2", "f-m2"], ["texto", "f-texto"]])
     if ($(id).value !== filtro[k]) $(id).value = filtro[k];
+  $("f-solo").checked = !!filtro.solo;
   $("seg-vista").innerHTML = [["lista", "▦ Fotos"], ["mapa", "🗺️ Mapa"]].map(([v, l]) => `<button data-vista="${v}" class="${vista === v ? "on" : ""}">${l}</button>`).join("");
 }
 
 function pintar() {
   pintarFiltros();
   const lista = filtradas();
-  $("cuenta").textContent = `${lista.length} propiedad${lista.length === 1 ? "" : "es"} disponible${lista.length === 1 ? "" : "s"}`;
+  const libres = lista.filter(disponible).length, ocupadas = lista.length - libres;
+  $("cuenta").textContent = `${libres} disponible${libres === 1 ? "" : "s"}${ocupadas ? ` · ${ocupadas} arrendada${ocupadas === 1 ? "" : "s"}` : ""}`;
   $("lista").hidden = vista !== "lista"; $("mapa").hidden = vista !== "mapa";
   if (vista === "lista") {
     $("lista").innerHTML = lista.length ? lista.map(p => {
       const f = (p.fotos || []).map(fotoSegura).filter(Boolean);
-      return `<article class="tarjeta" data-id="${esc(p.id)}" tabindex="0">
-        <div class="portada">${f[0] ? `<img src="${esc(f[0])}" alt="${esc(nombre(p))}" loading="lazy"/>` : ICONO[p.categoria] || "📍"}
+      return `<article class="tarjeta${disponible(p) ? "" : " no-disp"}" data-id="${esc(p.id)}" tabindex="0">
+        <div class="portada">${f[0] ? `<img src="${esc(f[0])}" alt="${esc(nombre(p))}" loading="lazy"/>` : ICONO[p.categoria] || "📍"}${disponible(p) ? "" : FRANJA}
           <div class="chips"><span class="chip op">${esc(OPERACION[p.operacion] || "Arriendo")}</span><span class="chip">${esc(CATEGORIAS[p.categoria] || "Propiedad")}</span></div>
           ${f.length > 1 ? `<span class="nfotos">📷 ${f.length}</span>` : ""}</div>
         <div class="cuerpo"><div class="titulo">${esc(nombre(p))}</div><div class="lugar">📍 ${esc(lugar(p) || "—")}</div>
-          <div class="specs">${specsHTML(p)}</div><div class="precio">${precioHTML(p)}</div></div></article>`;
+          <div class="specs">${specsHTML(p)}</div><div class="precio">${disponible(p) ? precioHTML(p) : "Arrendada"}</div></div></article>`;
     }).join("") : `<div class="vacio" style="grid-column:1/-1">No hay propiedades con esos filtros. <a href="#" id="limpiar2">Ver todas</a></div>`;
   } else pintarMapa(lista);
   const q = new URLSearchParams(Object.entries(filtro).filter(([, v]) => v));
@@ -232,8 +243,8 @@ function pintarMapa(lista) {
   mapa.invalidateSize();
   mapa.eachLayer(l => { if (l instanceof L.CircleMarker) mapa.removeLayer(l); });
   const pts = lista.filter(p => p.lat != null && p.lng != null);
-  pts.forEach(p => L.circleMarker([p.lat, p.lng], { radius: 9, color: "#fff", weight: 2, fillColor: getComputedStyle(document.documentElement).getPropertyValue("--p"), fillOpacity: 1 })
-    .addTo(mapa).bindTooltip(`<b>${esc(nombre(p))}</b><br>${esc(OPERACION[p.operacion])} · ${esc(CATEGORIAS[p.categoria] || "")}`).on("click", () => abrir(p.id)));
+  pts.forEach(p => L.circleMarker([p.lat, p.lng], { radius: 9, color: "#fff", weight: 2, fillColor: disponible(p) ? getComputedStyle(document.documentElement).getPropertyValue("--p") : "#DC2626", fillOpacity: 1 })
+    .addTo(mapa).bindTooltip(`<b>${esc(nombre(p))}</b><br>${disponible(p) ? `${esc(OPERACION[p.operacion])} · ${esc(CATEGORIAS[p.categoria] || "")}` : "No disponible (arrendada)"}`).on("click", () => abrir(p.id)));
   if (pts.length) mapa.fitBounds(L.latLngBounds(pts.map(p => [p.lat, p.lng])), { padding: [40, 40], maxZoom: 15 }); else mapa.setView([-33.45, -70.66], 11);
 }
 
@@ -249,8 +260,8 @@ function abrir(id) {
     [Number(p.estacionamientos) && p.estacionamientos, "Estacionamientos"], [p.gastos_comunes && fmtCLP(Number(p.gastos_comunes)), "Gastos comunes aprox."],
     [CATEGORIAS[p.categoria], "Tipo"]].filter(([v]) => v);
   $("modal-raiz").innerHTML = `<div class="overlay" id="overlay"><div class="modal" role="dialog" aria-modal="true" aria-label="${esc(nombre(p))}">
-    <div class="galeria" id="galeria"><button class="cerrar" id="cerrar" aria-label="Cerrar">✕</button>
-      ${fotos.length ? `<img id="foto-grande" src="${esc(fotos[0])}" alt="${esc(nombre(p))}"/>` : ICONO[p.categoria] || "📍"}
+    <div class="galeria${disponible(p) ? "" : " no-disp"}" id="galeria"><button class="cerrar" id="cerrar" aria-label="Cerrar">✕</button>
+      ${fotos.length ? `<img id="foto-grande" src="${esc(fotos[0])}" alt="${esc(nombre(p))}"/>` : ICONO[p.categoria] || "📍"}${disponible(p) ? "" : FRANJA}
       ${fotos.length > 1 ? `<button class="nav izq" id="ant" aria-label="Foto anterior">‹</button><button class="nav der" id="sig" aria-label="Foto siguiente">›</button>` : ""}</div>
     ${fotos.length > 1 ? `<div class="miniaturas">${fotos.map((f, k) => `<img src="${esc(f)}" data-k="${k}" class="${k ? "" : "on"}" alt="" loading="lazy"/>`).join("")}</div>` : ""}
     <div class="detalle">
@@ -262,9 +273,10 @@ function abrir(id) {
         ${p.lat != null ? `<div id="mapa-detalle"></div>` : ""}
       </div>
       <div class="contacto">
-        <div class="grande">${precioHTML(p)}</div>
-        ${empresa.whatsapp ? `<a class="btn btn-wa" style="justify-content:center" target="_blank" rel="noopener" href="https://wa.me/${telWA(empresa.whatsapp)}?text=${encodeURIComponent(msgWA)}">WhatsApp</a>` : ""}
-        <div style="font-weight:700;margin-top:4px">Pide más información o una visita</div>
+        ${disponible(p) ? `<div class="grande">${precioHTML(p)}</div>` : `<div class="grande" style="color:#DC2626">No disponible</div>
+        <div style="color:var(--dim);line-height:1.5">Esta propiedad está arrendada. Escríbenos y te avisamos cuando se desocupe o te mostramos otras similares.</div>`}
+        ${empresa.whatsapp ? `<a class="btn btn-wa" style="justify-content:center" target="_blank" rel="noopener" href="https://wa.me/${telWA(empresa.whatsapp)}?text=${encodeURIComponent(disponible(p) ? msgWA : `Hola, vi que "${nombre(p)}" (${lugar(p)}) está arrendada. ¿Tienen algo similar disponible?`)}">WhatsApp</a>` : ""}
+        ${disponible(p) ? `<div style="font-weight:700;margin-top:4px">Pide más información o una visita</div>
         <form id="form-contacto" style="display:flex;flex-direction:column;gap:8px">
           <div class="campo"><label for="c-nombre">Nombre</label><input id="c-nombre" required maxlength="100" autocomplete="name"/></div>
           <div class="campo"><label for="c-tel">Teléfono</label><input id="c-tel" maxlength="30" autocomplete="tel" inputmode="tel"/></div>
@@ -273,7 +285,7 @@ function abrir(id) {
           <input class="oculto" id="c-sitio" tabindex="-1" autocomplete="off" aria-hidden="true"/>
           <div id="c-estado"></div>
           <button class="btn btn-p" style="justify-content:center" id="c-enviar">Enviar</button>
-        </form>
+        </form>` : ""}
         <button class="btn" id="copiar" style="justify-content:center">🔗 Copiar enlace</button>
       </div>
     </div></div></div>`;
@@ -283,7 +295,7 @@ function abrir(id) {
   $("cerrar").onclick = cerrar;
   $("overlay").onclick = e => { if (e.target.id === "overlay") cerrar(); };
   $("copiar").onclick = () => navigator.clipboard.writeText(location.href).then(() => { $("copiar").textContent = "✓ Enlace copiado"; });
-  $("form-contacto").onsubmit = async e => {
+  if ($("form-contacto")) $("form-contacto").onsubmit = async e => {
     e.preventDefault();
     const estado = $("c-estado");
     if ($("c-sitio").value) return; // relleno automático: se ignora
@@ -311,6 +323,7 @@ function conectar() {
   $("seg-vista").onclick = e => { const b = e.target.closest("button"); if (b) { vista = b.dataset.vista; pintar(); } };
   for (const [k, id] of [["tipo", "f-tipo"], ["ciudad", "f-ciudad"], ["comuna", "f-comuna"], ["dorm", "f-dorm"], ["banos", "f-banos"], ["min", "f-min"], ["max", "f-max"], ["m2", "f-m2"], ["texto", "f-texto"]])
     $(id).addEventListener($(id).tagName === "SELECT" ? "change" : "input", () => { filtro[k] = $(id).value; pintar(); });
+  $("f-solo").onchange = () => { filtro.solo = $("f-solo").checked ? "1" : ""; pintar(); };
   $("mas-filtros").onclick = () => { const f = $("filtros"); f.classList.toggle("abierto"); $("mas-filtros").textContent = f.classList.contains("abierto") ? "Menos filtros" : "Más filtros"; };
   const limpiar = () => { Object.keys(filtro).forEach(k => filtro[k] = ""); pintar(); };
   $("limpiar").onclick = limpiar;
