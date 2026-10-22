@@ -226,19 +226,113 @@ const aCLP = (n, moneda, uf) => moneda === "CLP" ? Number(n) || 0 : (Number(n) |
 // IVA opcional sobre la renta (p. ej. locales comerciales). Las multas no llevan IVA.
 const TASA_IVA = 0.19;
 const conIVA = c => c && c.iva ? 1 + TASA_IVA : 1;
-// Reajuste opcional: la renta sube un % cada N meses, contados desde el mes de inicio del contrato
-const reajusteActivo = c => !!(c && c.reajuste && Number(c.reajuste.pct) > 0 && Number(c.reajuste.cadaMeses) > 0);
+// Reajuste de la renta. c.reajuste = { tipo, pct, cadaMeses, primero, avisoDias }
+//  · pct: sube un % fijo cada N meses (se calcula solo, desde el mes de inicio o desde "primero").
+//  · ipc / uf: al llegar el mes, el corredor lo aplica con la variación del IPC (acumulada del período)
+//    o de la UF; queda en c.reajustes (tabla reajustes) con los índices usados y rige desde ese mes.
+// Contratos antiguos sin "tipo" con pct > 0 son de tipo pct.
+const TIPOS_REAJUSTE = { "": "Sin reajuste", ipc: "IPC", uf: "Variación UF", pct: "Porcentaje fijo" };
+const PERIODICIDADES = { 1: "Mensual", 3: "Trimestral", 6: "Semestral", 12: "Anual" };
+const tipoReajuste = c => !c || !c.reajuste ? "" : c.reajuste.tipo || (Number(c.reajuste.pct) > 0 ? "pct" : "");
+const reajusteActivo = c => { const t = tipoReajuste(c); return !!t && Number(c.reajuste.cadaMeses) > 0 && (t !== "pct" || Number(c.reajuste.pct) > 0) && !(t === "uf" && c.moneda === "UF"); };
 const mesesEntre = (a, b) => { const [y1, m1] = a.split("-").map(Number), [y2, m2] = b.split("-").map(Number); return (y2 - y1) * 12 + m2 - m1; };
-const pasosReajuste = (c, periodo) => { const ini = parseISO(c.inicio); return reajusteActivo(c) && ini ? Math.floor(Math.max(0, mesesEntre(periodoDe(ini), periodo)) / Number(c.reajuste.cadaMeses)) : 0; };
+// Primer mes con reajuste: el indicado, o el inicio + periodicidad
+const primerReajuste = c => { const ini = parseISO(c.inicio); return c.reajuste.primero || (ini ? sumarMes(periodoDe(ini), Number(c.reajuste.cadaMeses)) : null); };
+const pasosReajuste = (c, periodo) => {
+  if (!reajusteActivo(c) || tipoReajuste(c) !== "pct") return 0;
+  const p1 = primerReajuste(c);
+  return p1 && periodo >= p1 ? Math.floor(mesesEntre(p1, periodo) / Number(c.reajuste.cadaMeses)) + 1 : 0;
+};
+const redondearRenta = (v, moneda) => moneda === "CLP" ? Math.round(v) : Math.round(v * 100) / 100;
+// Reajustes IPC/UF ya aplicados, del más antiguo al más nuevo
+const aplicados = c => [...(c.reajustes || [])].sort((a, b) => a.desde.localeCompare(b.desde));
 function rentaMes(c, periodo = periodoDe(new Date())) {
-  const base = Number(c.valor) || 0, n = pasosReajuste(c, periodo);
-  if (!n) return base;
-  const v = base * Math.pow(1 + Number(c.reajuste.pct) / 100, n);
-  return c.moneda === "CLP" ? Math.round(v) : Math.round(v * 100) / 100;
+  const base = Number(c.valor) || 0;
+  if (tipoReajuste(c) === "pct") {
+    const n = pasosReajuste(c, periodo);
+    return n ? redondearRenta(base * Math.pow(1 + Number(c.reajuste.pct) / 100, n), c.moneda) : base;
+  }
+  const ap = aplicados(c).filter(r => r.desde <= periodo).pop();
+  return ap ? Number(ap.valorNuevo) : base;
 }
-// Próximo mes en que sube la renta
-const proximoReajuste = (c, periodo = periodoDe(new Date())) => { const ini = parseISO(c.inicio); return reajusteActivo(c) && ini ? sumarMes(periodoDe(ini), (pasosReajuste(c, periodo) + 1) * Number(c.reajuste.cadaMeses)) : null; };
-const descripcionReajuste = c => reajusteActivo(c) ? `${String(c.reajuste.pct).replace(".", ",")}% cada ${c.reajuste.cadaMeses} ${Number(c.reajuste.cadaMeses) === 1 ? "mes" : "meses"}` : "";
+// Próximo mes en que sube la renta (para IPC/UF: el siguiente al último aplicado; puede estar vencido)
+function proximoReajuste(c, periodo = periodoDe(new Date())) {
+  if (!reajusteActivo(c)) return null;
+  const p1 = primerReajuste(c), n = Number(c.reajuste.cadaMeses);
+  if (!p1) return null;
+  if (tipoReajuste(c) === "pct") return sumarMes(p1, pasosReajuste(c, periodo) * n);
+  const ult = aplicados(c).pop();
+  return ult ? sumarMes(ult.desde, n) : p1;
+}
+// IPC/UF con el mes ya llegado y sin aplicar: los cobros siguen con la renta anterior hasta aplicarlo
+const reajustePendiente = (c, periodo = periodoDe(new Date())) => { const p = reajusteActivo(c) && tipoReajuste(c) !== "pct" ? proximoReajuste(c, periodo) : null; return p && p <= periodo ? p : null; };
+// Días que faltan para el reajuste (desde el día 1 del mes en que rige)
+const diasParaReajuste = (c, hoy) => { const p = proximoReajuste(c, periodoDe(hoy)); return p == null ? null : Math.round((vencimiento(p, 1) - sinHora(hoy)) / 86400000); };
+const avisoReajuste = c => Number(c.reajuste && c.reajuste.avisoDias) >= 0 && c.reajuste.avisoDias !== "" && c.reajuste.avisoDias != null ? Number(c.reajuste.avisoDias) : 30;
+const descripcionReajuste = c => {
+  if (!reajusteActivo(c)) return "";
+  const n = Number(c.reajuste.cadaMeses), cada = PERIODICIDADES[n] ? PERIODICIDADES[n].toLowerCase() : `cada ${n} meses`;
+  const t = tipoReajuste(c);
+  return t === "pct" ? `${String(c.reajuste.pct).replace(".", ",")}% ${n === 12 ? "anual" : cada}` : `${t === "ipc" ? "según IPC" : "según variación de la UF"}, ${cada}`;
+};
+// Historial: los aplicados (IPC/UF) o los pasos ya ocurridos del % fijo
+function historialReajustes(c, periodo = periodoDe(new Date())) {
+  if (tipoReajuste(c) !== "pct") return aplicados(c);
+  const n = pasosReajuste(c, periodo), p1 = primerReajuste(c), r = [];
+  for (let i = 1; i <= n; i++) {
+    const desde = sumarMes(p1, (i - 1) * Number(c.reajuste.cadaMeses));
+    r.push({ id: desde, desde, tipo: "pct", variacionPct: Number(c.reajuste.pct), valorAnterior: rentaMes(c, sumarMes(desde, -1)), valorNuevo: rentaMes(c, desde), detalle: { automatico: true } });
+  }
+  return r;
+}
+// Normaliza para guardar en contratos.reajuste
+function reajusteAGuardar(c) {
+  if (!reajusteActivo(c)) return null;
+  const r = c.reajuste, t = tipoReajuste(c), o = { tipo: t, cadaMeses: Number(r.cadaMeses) };
+  if (t === "pct") o.pct = Number(r.pct);
+  if (r.primero) o.primero = r.primero;
+  if (r.avisoDias !== "" && r.avisoDias != null) o.avisoDias = Number(r.avisoDias);
+  // contratos antiguos guardados como { pct, cadaMeses }: se dejan igual mientras no se editen
+  return !r.tipo && t === "pct" && !r.primero && r.avisoDias == null ? { pct: Number(r.pct), cadaMeses: Number(r.cadaMeses) } : o;
+}
+
+// Índices para el reajuste (mindicador.cl, fuente Banco Central / INE)
+async function indicadorMensual(codigo, anio) {
+  const r = await fetch(`https://mindicador.cl/api/${codigo}/${anio}`);
+  if (!r.ok) throw new Error("mindicador " + r.status);
+  return ((await r.json()).serie || []).map(s => ({ periodo: s.fecha.slice(0, 7), fecha: s.fecha.slice(0, 10), valor: Number(s.valor) }));
+}
+// IPC: variación acumulada de los N meses anteriores al mes del reajuste. Si el último mes aún no se
+// publica (el INE lo publica ~el día 8), se usan los N últimos publicados y se indica cuáles.
+async function calcularIPC(desde, n) {
+  const fin = sumarMes(desde, -1), ini = sumarMes(desde, -n - 3);
+  const anios = [...new Set([ini.slice(0, 4), fin.slice(0, 4)])];
+  const serie = (await Promise.all(anios.map(a => indicadorMensual("ipc", a)))).flat()
+    .filter(s => s.periodo <= fin).sort((a, b) => a.periodo.localeCompare(b.periodo));
+  const meses = serie.slice(-n);
+  if (meses.length < n) throw new Error("No hay suficientes meses de IPC publicados");
+  const variacion = (meses.reduce((t, m) => t * (1 + m.valor / 100), 1) - 1) * 100;
+  return { variacionPct: Math.round(variacion * 10000) / 10000, detalle: { fuente: "mindicador.cl (INE)", meses: meses.map(m => ({ periodo: m.periodo, ipc: m.valor })), completo: meses[meses.length - 1].periodo === fin } };
+}
+// UF: valor del día 1 del mes del reajuste contra el día 1 de N meses antes
+async function valorUF(fecha) {
+  const [y, m, d] = fecha.split("-");
+  const r = await fetch(`https://mindicador.cl/api/uf/${d}-${m}-${y}`);
+  const s = r.ok && ((await r.json()).serie || [])[0];
+  if (!s) throw new Error(`Sin valor UF para ${fecha}`);
+  return Number(s.valor);
+}
+async function calcularUF(desde, n) {
+  const f1 = `${sumarMes(desde, -n)}-01`, f2 = `${desde}-01`;
+  const [u1, u2] = await Promise.all([valorUF(f1), valorUF(f2)]);
+  return { variacionPct: Math.round((u2 / u1 - 1) * 1000000) / 10000, detalle: { fuente: "mindicador.cl (Banco Central)", ufInicio: { fecha: f1, valor: u1 }, ufFin: { fecha: f2, valor: u2 } } };
+}
+async function calcularReajuste(c, desde) {
+  const n = Number(c.reajuste.cadaMeses), t = tipoReajuste(c);
+  const r = t === "ipc" ? await calcularIPC(desde, n) : await calcularUF(desde, n);
+  const anterior = rentaMes(c, sumarMes(desde, -1));
+  return { desde, tipo: t, variacionPct: r.variacionPct, detalle: r.detalle, valorAnterior: anterior, valorNuevo: redondearRenta(anterior * (1 + r.variacionPct / 100), c.moneda) };
+}
 const fmtRenta = (c, periodo) => fmtMonto(rentaMes(c, periodo), c.moneda) + (c.iva ? " + IVA" : "");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const telWA = t => { let d = String(t || "").replace(/\D/g, ""); if (d.length === 9 && d[0] === "9") d = "56" + d; if (d.length === 8) d = "569" + d; return d; };
@@ -372,11 +466,13 @@ function mensajeError(e) {
   return m;
 }
 
-const aContrato = (c, pagos, abonos) => ({
+const aContrato = (c, pagos, abonos, reajs = []) => ({
   id: c.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: c.termino || "", diaPago: c.dia_pago, moneda: c.moneda,
   valor: Number(c.valor), iva: !!c.iva, reajuste: c.reajuste || null, garantia: c.garantia == null ? "" : Number(c.garantia), multa: c.multa,
   multasCondonadas: Object.fromEntries((c.multas_condonadas || []).map(p => [p, true])),
   terminado: c.terminado,
+  reajustes: reajs.filter(r => r.contrato_id === c.id).map(r => ({ id: r.id, desde: r.desde, tipo: r.tipo, variacionPct: Number(r.variacion_pct), detalle: r.detalle || {},
+    valorAnterior: Number(r.valor_anterior), valorNuevo: Number(r.valor_nuevo), registradoPor: r.registrado_nombre || "", creado: r.creado })),
   pagos: pagos.filter(p => p.contrato_id === c.id).map(p => ({
     id: p.id, periodo: p.periodo, fecha: p.fecha, ufDia: p.uf_dia == null ? null : Number(p.uf_dia),
     montoCLP: p.monto_clp, multaCLP: p.multa_clp, ivaCLP: p.iva_clp || 0, metodo: p.medio || "", obs: p.obs || "",
@@ -391,7 +487,7 @@ const vacio = v => v == null ? "" : v;
 
 async function cargarEmpresa(E) {
   const f = t => () => sb.from(t).select("*").eq("empresa_id", E);
-  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs, plns, dueños, bancos, liqs] = await Promise.all([
+  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs, plns, dueños, bancos, liqs, reajs] = await Promise.all([
     q(sb.from("empresas").select("*").eq("id", E).single()),
     q(sb.from("suscripciones").select("*, planes(*)").eq("empresa_id", E).maybeSingle()),
     todas(() => f("propiedades")().order("creado")),
@@ -408,6 +504,7 @@ async function cargarEmpresa(E) {
     todas(f("propietarios")),
     q(f("propietarios_banco")()),            // solo el dueño los recibe (RLS)
     todas(() => f("liquidaciones")().order("creado", { ascending: false })), // ídem
+    todas(f("reajustes")),
   ]);
   const plan = sus && sus.planes;
   const propDeUnidad = Object.fromEntries(unis.map(u => [u.id, u.propiedad_id]));
@@ -436,8 +533,8 @@ async function cargarEmpresa(E) {
           id: u.id, nombre: u.nombre, categoria: u.categoria, m2: vacio(u.m2), dormitorios: vacio(u.dormitorios), banos: vacio(u.banos),
           estacionamientos: vacio(u.estacionamientos), descripcion: vacio(u.descripcion), precioUF: vacio(u.precio_uf), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [],
           publicar: u.publicar !== false, operacion: u.operacion || "arriendo", precioVentaUF: vacio(u.precio_venta_uf),
-          contrato: vig ? aContrato(vig, pags, abns) : null,
-          historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags, abns)),
+          contrato: vig ? aContrato(vig, pags, abns, reajs) : null,
+          historial: cons.filter(c => c.unidad_id === u.id && !c.vigente).map(c => aContrato(c, pags, abns, reajs)),
         };
       }),
     })),
@@ -449,7 +546,7 @@ async function cargarEmpresa(E) {
 
 // Convierte el estado de la app en filas por tabla, para comparar y guardar solo lo que cambió
 function filas(st, E) {
-  const t = { empresas: new Map(), propietarios: new Map(), propietarios_banco: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), pagos: new Map(), abonos: new Map(), documentos: new Map(), interesados: new Map() };
+  const t = { empresas: new Map(), propietarios: new Map(), propietarios_banco: new Map(), propiedades: new Map(), unidades: new Map(), contratos: new Map(), reajustes: new Map(), pagos: new Map(), abonos: new Map(), documentos: new Map(), interesados: new Map() };
   const e = st.empresa, n = v => v === "" || v == null ? null : v;
   t.empresas.set(e.id, { id: e.id, nombre: e.nombre, rut: n(e.rut), direccion: n(e.direccion), email: n(e.email), telefono: n(e.telefono), representante: n(e.representante), rut_rep: n(e.rutRep), slug: n(e.slug), web: e.web || {} });
   (st.propietarios || []).forEach(pr => {
@@ -468,9 +565,11 @@ function filas(st, E) {
       const contratos = [...(u.historial || []).map(c => [c, false]), ...(u.contrato ? [[u.contrato, true]] : [])];
       contratos.forEach(([c, vigente]) => {
         t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
-          dia_pago: Number(c.diaPago), moneda: c.moneda, valor: num(c.valor), iva: !!c.iva, reajuste: reajusteActivo(c) ? { pct: Number(c.reajuste.pct), cadaMeses: Number(c.reajuste.cadaMeses) } : null, garantia: num(c.garantia), multa: c.multa || { cobrar: false },
+          dia_pago: Number(c.diaPago), moneda: c.moneda, valor: num(c.valor), iva: !!c.iva, reajuste: reajusteAGuardar(c), garantia: num(c.garantia), multa: c.multa || { cobrar: false },
           multas_condonadas: Object.keys(c.multasCondonadas || {}).filter(k => c.multasCondonadas[k]).sort(),
           vigente, terminado: vigente ? null : n(c.terminado) });
+        (c.reajustes || []).forEach(r => t.reajustes.set(r.id, { id: r.id, empresa_id: E, contrato_id: c.id, desde: r.desde, tipo: r.tipo, variacion_pct: r.variacionPct,
+          detalle: r.detalle || {}, valor_anterior: r.valorAnterior, valor_nuevo: r.valorNuevo, registrado_nombre: n(r.registradoPor) }));
         (c.pagos || []).forEach(pg => t.pagos.set(pg.id, { id: pg.id, empresa_id: E, contrato_id: c.id, periodo: pg.periodo, fecha: pg.fecha,
           uf_dia: num(pg.ufDia), monto_clp: Math.round(pg.montoCLP || 0), multa_clp: Math.round(pg.multaCLP || 0), iva_clp: Math.round(pg.ivaCLP || 0), medio: n(pg.metodo), obs: n(pg.obs), registrado_nombre: n(pg.registradoPor) }));
         (c.abonos || []).forEach(a => t.abonos.set(a.id, { id: a.id, empresa_id: E, contrato_id: c.id, periodo: a.periodo, fecha: a.fecha,
@@ -483,7 +582,7 @@ function filas(st, E) {
   return t;
 }
 
-const TABLAS = ["empresas", "propietarios", "propietarios_banco", "propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados"];
+const TABLAS = ["empresas", "propietarios", "propietarios_banco", "propiedades", "unidades", "contratos", "reajustes", "pagos", "abonos", "documentos", "interesados"];
 async function sincronizar(prev, next, E) {
   const a = filas(prev, E), b = filas(next, E);
   const creadas = [];
@@ -524,7 +623,7 @@ async function escribir(a, b, creadas) {
 function conIdsNuevos(d) {
   const mapa = {};
   const id = viejo => mapa[viejo] || (mapa[viejo] = uid());
-  const contrato = c => ({ ...c, id: uid(), pagos: (c.pagos || []).map(pg => ({ ...pg, id: uid() })), abonos: (c.abonos || []).map(a => ({ ...a, id: uid() })) });
+  const contrato = c => ({ ...c, id: uid(), reajustes: (c.reajustes || []).map(r => ({ ...r, id: uid() })), pagos: (c.pagos || []).map(pg => ({ ...pg, id: uid() })), abonos: (c.abonos || []).map(a => ({ ...a, id: uid() })) });
   const propiedades = (d.propiedades || []).map(p => ({ ...p, id: id(p.id), arrendador: p.arrendador || {}, propietarioId: "",
     unidades: (p.unidades || []).map(u => ({ ...u, id: id(u.id), fotos: u.fotos || [], contrato: u.contrato ? contrato(u.contrato) : null, historial: (u.historial || []).map(contrato) })) }));
   const documentos = (d.documentos || []).filter(x => mapa[x.unidadId]).map(x => ({ ...x, id: uid(), propId: mapa[x.propId], unidadId: mapa[x.unidadId] }));
@@ -744,6 +843,12 @@ function mensajes(p, u, r, uf, empresa) {
   out.push({ id: "pago", titulo: "Confirmación de pago recibido",
     asunto: `Pago recibido - ${nom}`,
     texto: `Estimado/a ${a.nombre || ""}:\n\nConfirmamos la recepción de su pago del arriendo de ${nom}. Muchas gracias.${firma}` });
+  if (reajusteActivo(c)) {
+    const hoyP = periodoDe(new Date()), prox = proximoReajuste(c, hoyP), nuevo = tipoReajuste(c) === "pct" ? rentaMes(c, prox) : null;
+    out.push({ id: "reajuste", titulo: "Aviso de reajuste",
+      asunto: `Reajuste del arriendo - ${nom}`,
+      texto: `Estimado/a ${a.nombre || ""}:\n\nLe recordamos que, según su contrato, la renta del arriendo de ${nom} se reajusta ${descripcionReajuste(c)}. El próximo reajuste rige desde ${nombrePeriodo(prox).toLowerCase()}${nuevo != null ? `, con una renta de ${fmtMonto(nuevo, c.moneda)}${c.iva ? " + IVA" : ""}` : `; le informaremos el monto según ${tipoReajuste(c) === "ipc" ? "la variación del IPC publicada por el INE" : "la variación de la UF"}`}.${firma}` });
+  }
   if (r.diasTermino != null && r.diasTermino <= DIAS_AVISO_TERMINO) {
     out.push({ id: "termino", titulo: "Contrato por terminar",
       asunto: `Término de contrato - ${nom}`,
@@ -803,7 +908,7 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
 <p><b>PRIMERO: Inmueble.</b> El Arrendador da en arrendamiento al Arrendatario, quien acepta para sí, el inmueble ubicado en ${inmueble}${u.m2 ? `, de una superficie aproximada de ${h(u.m2)} m²` : ""}.</p>
 <p><b>SEGUNDO: Destino.</b> ${destino}</p>
 <p><b>TERCERO: Plazo.</b> El presente contrato rige desde el ${c.inicio ? fmtFechaLarga(c.inicio) : "___"} hasta el ${c.termino ? fmtFechaLarga(c.termino) : "___"}. Se renovará tácita y sucesivamente por períodos de un año si ninguna de las partes comunica a la otra su voluntad de no renovarlo, mediante carta certificada enviada con al menos 60 días de anticipación al vencimiento.</p>
-<p><b>CUARTO: Renta.</b> La renta mensual será de ${renta}${c.moneda === "UF" ? ", pagadera en su equivalente en pesos según el valor de la UF del día del pago efectivo" : ""}${reajusteActivo(c) ? `, y se reajustará en un ${h(descripcionReajuste(c))}, contados desde el inicio del contrato` : c.moneda === "UF" ? "" : ", reajustable anualmente según la variación del IPC"}. Se pagará por mes anticipado, a más tardar el día ${h(c.diaPago || "5")} de cada mes, mediante transferencia o depósito en la cuenta que indique el Arrendador.</p>
+<p><b>CUARTO: Renta.</b> La renta mensual será de ${renta}${c.moneda === "UF" ? ", pagadera en su equivalente en pesos según el valor de la UF del día del pago efectivo" : ""}${reajusteActivo(c) ? `, y se reajustará ${tipoReajuste(c) === "pct" ? `en un ${h(descripcionReajuste(c))}` : `${(PERIODICIDADES[c.reajuste.cadaMeses] || "periódica").toLowerCase()}mente según la variación ${tipoReajuste(c) === "ipc" ? "acumulada del Índice de Precios al Consumidor (IPC) informada por el INE en el período" : "de la Unidad de Fomento en el período"}`}, a contar de ${nombrePeriodo(primerReajuste(c)).toLowerCase()}` : c.moneda === "UF" ? "" : ", reajustable anualmente según la variación del IPC"}. Se pagará por mes anticipado, a más tardar el día ${h(c.diaPago || "5")} de cada mes, mediante transferencia o depósito en la cuenta que indique el Arrendador.</p>
 <p><b>QUINTO: Multa por atraso.</b> ${multaTxt}</p>
 <p><b>SEXTO: Garantía.</b> El Arrendatario entrega en este acto la suma equivalente a ${c.garantia ? (c.moneda === "CLP" ? fmtCLP(c.garantia) : String(c.garantia).replace(".", ",") + " UF") : "___"} a título de garantía, para asegurar la restitución del inmueble en el estado en que lo recibe y el pago de rentas, consumos y eventuales daños. Será devuelta dentro de los 30 días siguientes a la restitución, debidamente reajustada, deducidos los montos que correspondan.</p>
 <p><b>SÉPTIMO: Gastos y servicios.</b> Serán de cargo del Arrendatario los consumos de luz, agua, gas, gastos comunes y demás servicios, debiendo exhibir los comprobantes de pago cuando el Arrendador lo solicite.</p>
@@ -1268,6 +1373,12 @@ function Alertas() {
   listarUnidades(st).forEach(({ p, u }) => {
     const r = calcUnidad(u, hoy, uf);
     if (["atrasado", "hoy", "proximo"].includes(r.estado)) items.push({ p, u, r, ord: EST[r.estado].ord, txt: r.estado === "atrasado" ? `${r.deudas.length} mes(es) · ${fmtCLP(r.deudaCLP)}${r.multa ? " (incluye multa)" : ""}` : `Vence ${fmtFecha(r.proxVenc)} · ${fmtRenta(u.contrato)}` });
+    const c = u.contrato;
+    if (c && reajusteActivo(c)) {
+      const pend = reajustePendiente(c, periodoDe(hoy)), dias = diasParaReajuste(c, hoy);
+      if (pend) items.push({ p, u, r, ord: 2.5, reajuste: true, txt: `Reajuste ${TIPOS_REAJUSTE[tipoReajuste(c)]} de ${nombrePeriodo(pend)} pendiente de aplicar` });
+      else if (dias != null && dias >= 0 && dias <= avisoReajuste(c)) items.push({ p, u, r, ord: 3.5, reajuste: true, txt: `Reajuste en ${dias} días (${nombrePeriodo(proximoReajuste(c, periodoDe(hoy)))}) · ${descripcionReajuste(c)}` });
+    }
     if (r.diasTermino != null && r.diasTermino <= DIAS_AVISO_TERMINO) items.push({ p, u, r, ord: 3, termino: true, txt: r.diasTermino < 0 ? `Contrato venció el ${fmtFecha(u.contrato.termino)}` : `Contrato termina en ${r.diasTermino} días (${fmtFecha(u.contrato.termino)})` });
   });
   items.sort((a, b) => a.ord - b.ord);
@@ -1276,7 +1387,7 @@ function Alertas() {
     <div className="grid" style={{ gap: 8 }}>
       {items.slice(0, 12).map((x, i) => (
         <div key={i} className="alert-row" onClick={() => abrirFicha(x.p.id, x.u.id)}>
-          {x.termino ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>📄 Contrato</span> : <Badge estado={x.r.estado} />}
+          {x.termino ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>📄 Contrato</span> : x.reajuste ? <span className="tag" style={{ background: C.warningBg, color: C.warning }}>📈 Reajuste</span> : <Badge estado={x.r.estado} />}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(x.p, x.u)}</div>
             <div className="muted">{x.u.contrato.arrendatario?.nombre} · {x.txt}</div>
@@ -1688,12 +1799,26 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
             <Campo label="IVA">
               <label className="switch" style={{ marginTop: 9 }}><input type="checkbox" checked={!!c.iva} onChange={e => updC("iva", e.target.checked)} />Cobrar más IVA (19%)</label>
             </Campo>
-            <Campo label="Reajuste (%)"><input className="input" type="number" step="0.01" min="0" placeholder="Sin reajuste" value={c.reajuste?.pct ?? ""} onChange={e => updC("reajuste", { cadaMeses: 12, ...(c.reajuste || {}), pct: e.target.value })} /></Campo>
-            <Campo label="Reajustar cada (meses)">
-              <select className="select" value={c.reajuste?.cadaMeses ?? 12} onChange={e => updC("reajuste", { pct: "", ...(c.reajuste || {}), cadaMeses: Number(e.target.value) })}>
-                {[1, 3, 6, 12, 24].map(n => <option key={n} value={n}>{n === 1 ? "Cada mes" : `Cada ${n} meses`}</option>)}
+            <Campo label="Reajuste">
+              <select className="select" value={tipoReajuste(c)} onChange={e => updC("reajuste", e.target.value ? { cadaMeses: 12, ...(c.reajuste || {}), tipo: e.target.value } : null)}>
+                {Object.entries(TIPOS_REAJUSTE).map(([k, v]) => <option key={k} value={k} disabled={k === "uf" && c.moneda === "UF"}>{v}{k === "uf" && c.moneda === "UF" ? " (solo contratos en pesos)" : ""}</option>)}
               </select>
             </Campo>
+            {tipoReajuste(c) && <>
+              {tipoReajuste(c) === "pct" && <Campo label="Porcentaje (%)"><input className="input" type="number" step="0.01" min="0" value={c.reajuste.pct ?? ""} onChange={e => updC("reajuste", { ...c.reajuste, pct: e.target.value })} /></Campo>}
+              <Campo label="Periodicidad">
+                <select className="select" value={c.reajuste.cadaMeses ?? 12} onChange={e => updC("reajuste", { ...c.reajuste, cadaMeses: Number(e.target.value) })}>
+                  {[1, 3, 6, 12, 24].map(n => <option key={n} value={n}>{PERIODICIDADES[n] || `Cada ${n} meses`}</option>)}
+                </select>
+              </Campo>
+              <Campo label="Primer reajuste (mes)"><input className="input" type="month" value={c.reajuste.primero || ""} placeholder={c.inicio ? sumarMes(c.inicio.slice(0, 7), Number(c.reajuste.cadaMeses) || 12) : ""} onChange={e => updC("reajuste", { ...c.reajuste, primero: e.target.value || undefined })} /></Campo>
+              <Campo label="Avisar (días antes)"><input className="input" type="number" min="0" max="120" value={c.reajuste.avisoDias ?? ""} placeholder="30" onChange={e => updC("reajuste", { ...c.reajuste, avisoDias: e.target.value === "" ? undefined : Number(e.target.value) })} /></Campo>
+              <div className="muted" style={{ gridColumn: "1 / -1" }}>
+                {tipoReajuste(c) === "pct" ? "La renta sube sola en ese porcentaje en cada período."
+                  : `Al llegar el mes, la ficha te pide aplicarlo: se calcula con ${tipoReajuste(c) === "ipc" ? "la variación acumulada del IPC del período (INE)" : "la variación de la UF del período (Banco Central)"}, redondeado ${c.moneda === "CLP" ? "a peso" : "a 2 decimales"}, y los cobros siguientes salen con la renta nueva.`}
+                {" "}Si no indicas el primer reajuste, es {PERIODICIDADES[c.reajuste.cadaMeses] ? `${(Number(c.reajuste.cadaMeses) || 12)} ${Number(c.reajuste.cadaMeses) === 1 ? "mes" : "meses"}` : "un período"} después del inicio.
+              </div>
+            </>}
           </div>
           <div className="card" style={{ marginTop: 14, background: c.multa.cobrar ? C.warningBg : C.bg, padding: 14 }}>
             <div className="row between">
@@ -2044,6 +2169,79 @@ function CompartirModal({ p, u, onClose }) {
 
 
 // ─── FICHA (panel lateral) ────────────────────────────────────────────────────
+// Reajuste en la ficha: renta vigente, la que viene, aviso, aplicar (IPC/UF) e historial
+const pctTxt = v => `${Number(v).toLocaleString("es-CL", { maximumFractionDigits: 4 })}%`;
+function detalleIndice(r) {
+  const d = r.detalle || {};
+  if (r.tipo === "pct") return `${pctTxt(r.variacionPct)} fijo pactado`;
+  if (r.tipo === "ipc") return `IPC acumulado ${pctTxt(r.variacionPct)}: ` + (d.meses || []).map(m => `${nombrePeriodo(m.periodo).slice(0, 3).toLowerCase()} ${m.periodo.slice(2, 4)} ${String(m.ipc).replace(".", ",")}%`).join(" · ") + (d.completo === false ? " (últimos meses publicados)" : "");
+  return `UF ${fmtFecha(d.ufInicio?.fecha)} ${fmtCLP(d.ufInicio?.valor)} → ${fmtFecha(d.ufFin?.fecha)} ${fmtCLP(d.ufFin?.valor)} (${pctTxt(r.variacionPct)})`;
+}
+function ReajusteFicha({ p, u, c }) {
+  const { hoy, user, update, toast } = useApp();
+  const [calc, setCalc] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  useEffect(() => { setCalc(null); }, [c.id]);
+  if (!reajusteActivo(c)) return <div className="muted" style={{ marginTop: 10 }}>Sin reajuste pactado.{puede(user, "editar") ? " Puedes configurarlo (IPC, UF o % fijo) al editar el contrato." : ""}</div>;
+  const actual = periodoDe(hoy), tipo = tipoReajuste(c);
+  const prox = proximoReajuste(c, actual), pend = reajustePendiente(c, actual), dias = diasParaReajuste(c, hoy);
+  const hist = historialReajustes(c, actual);
+  const aviso = !pend && dias != null && dias <= avisoReajuste(c);
+  const siguiente = tipo === "pct" ? rentaMes(c, prox) : calc && calc.desde === prox ? calc.valorNuevo : null;
+  const calcular = async () => {
+    setCargando(true);
+    try { setCalc(await calcularReajuste(c, prox)); }
+    catch (e) { toast("No se pudo obtener el índice: " + e.message); }
+    finally { setCargando(false); }
+  };
+  const contratoDe = s => s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
+  const aplicar = () => {
+    const r = { id: uid(), ...calc, registradoPor: user.nombre };
+    update(s => { const cc = contratoDe(s); cc.reajustes = [...(cc.reajustes || []), r]; },
+      `Aplicó reajuste ${TIPOS_REAJUSTE[tipo]} (${pctTxt(r.variacionPct)}) en "${nombreUnidad(p, u)}": ${fmtMonto(r.valorAnterior, c.moneda)} → ${fmtMonto(r.valorNuevo, c.moneda)} desde ${nombrePeriodo(r.desde)}`);
+    setCalc(null); toast("Reajuste aplicado: los cobros desde " + nombrePeriodo(r.desde) + " salen con la renta nueva");
+  };
+  const ultimo = tipo !== "pct" ? hist[hist.length - 1] : null;
+  const deshacer = () => {
+    if (!confirm(`¿Deshacer el reajuste de ${nombrePeriodo(ultimo.desde)}? La renta vuelve a ${fmtMonto(ultimo.valorAnterior, c.moneda)}.`)) return;
+    update(s => { const cc = contratoDe(s); cc.reajustes = (cc.reajustes || []).filter(x => x.id !== ultimo.id); },
+      `Deshizo el reajuste de ${nombrePeriodo(ultimo.desde)} en "${nombreUnidad(p, u)}"`);
+  };
+  return (
+    <div className="card" style={{ marginTop: 10, padding: 12, background: pend ? C.warningBg : aviso ? C.infoBg : C.bg }}>
+      <div className="row between" style={{ alignItems: "flex-start" }}>
+        <div style={{ fontSize: 12.5 }}>
+          <b>Reajuste:</b> {descripcionReajuste(c)}{c.moneda === "UF" ? " · renta en UF (se paga en pesos a la UF del día del pago)" : ""}
+          <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "auto auto", gap: "2px 14px", justifyContent: "start" }}>
+            <span className="muted">Renta vigente</span><b>{fmtRenta(c)}</b>
+            <span className="muted">Próximo reajuste</span><span>{nombrePeriodo(prox)}{pend ? " · pendiente de aplicar" : dias != null && dias >= 0 ? ` · en ${dias} días` : ""}</span>
+            <span className="muted">Renta que viene</span><span>{siguiente != null ? <b>{fmtMonto(siguiente, c.moneda)}{c.iva ? " + IVA" : ""}</b> : tipo === "ipc" ? "según IPC del período" : "según variación de la UF"}{calc && calc.desde === prox ? <span className="muted"> ({detalleIndice(calc)})</span> : null}</span>
+          </div>
+          {pend && <div style={{ marginTop: 6, color: C.warning }}>⚠️ El reajuste de {nombrePeriodo(pend)} aún no se aplica: los cobros siguen con la renta anterior.</div>}
+          {aviso && <div style={{ marginTop: 6, color: C.info }}>🔔 Reajuste en {dias} días: avisa al arrendatario.</div>}
+        </div>
+        {tipo !== "pct" && puede(user, "editar") && (
+          <div className="row" style={{ flexShrink: 0 }}>
+            {(!calc || calc.desde !== prox) && (pend || tipo === "ipc") && <button className="btn btn-ghost btn-sm" disabled={cargando} onClick={calcular}>{cargando ? "Calculando…" : pend ? "Calcular" : "Estimar"}</button>}
+            {calc && calc.desde === prox && pend && <button className="btn btn-primary btn-sm" onClick={aplicar}>Aplicar reajuste</button>}
+          </div>
+        )}
+      </div>
+      {hist.length > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
+          <div className="label" style={{ marginBottom: 4 }}>Historial de reajustes</div>
+          {hist.slice().reverse().map(r => (
+            <div key={r.id} style={{ fontSize: 12, padding: "3px 0" }}>
+              <b>{nombrePeriodo(r.desde)}</b>: {fmtMonto(r.valorAnterior, c.moneda)} → {fmtMonto(r.valorNuevo, c.moneda)} <span className="muted">· {detalleIndice(r)}{r.registradoPor ? ` · aplicó ${r.registradoPor}${r.creado ? " el " + fmtFecha(r.creado.slice(0, 10)) : ""}` : ""}</span>
+              {ultimo && r.id === ultimo.id && user.rol === "dueno" && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6, padding: "1px 8px" }} onClick={deshacer}>Deshacer</button>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FichaDrawer({ propId, unidadId, onClose }) {
   const { st, hoy, uf, user, update, toast, setUnidadFicha } = useApp();
   const p = st.propiedades.find(x => x.id === propId);
@@ -2198,7 +2396,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                     <div className="muted">Renta mensual</div>
                     <div style={{ fontSize: 22, fontWeight: 700 }}>{fmtRenta(c)}</div>
                     {c.moneda === "UF" && <div className="muted">≈ {fmtCLP(r.canonCLP)} (UF {fmtCLP(uf)})</div>}
-                    {reajusteActivo(c) && <div className="muted">Reajuste {descripcionReajuste(c)} · base {fmtMonto(c.valor, c.moneda)} · sube en {nombrePeriodo(proximoReajuste(c))}</div>}
+                    {reajusteActivo(c) && <div className="muted">Reajuste {descripcionReajuste(c)}{reajustePendiente(c, periodoDe(hoy)) ? ` · ⚠️ pendiente de aplicar (${nombrePeriodo(reajustePendiente(c, periodoDe(hoy)))})` : ` · próximo ${nombrePeriodo(proximoReajuste(c, periodoDe(hoy)))}`}</div>}
                   </div>
                   <div style={{ textAlign: "right" }}>
                     <Badge estado={r.estado} />
@@ -2244,6 +2442,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                     {esDueno ? <button className="btn btn-ghost btn-sm" onClick={toggleMulta}>{c.multa?.cobrar ? "Desactivar" : "Activar"}</button> : <span className="muted">Lo decide el dueño</span>}
                   </div>
                 </div>
+                <ReajusteFicha p={p} u={u} c={c} />
               </div>
             )}
             <div>
@@ -3525,7 +3724,7 @@ const VISTAS = [
   { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloDueno: true },
   { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloDueno: true },
 ];
-const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "pagos", "abonos", "documentos", "interesados", "miembros", "propietarios", "liquidaciones"];
+const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "reajustes", "pagos", "abonos", "documentos", "interesados", "miembros", "propietarios", "liquidaciones"];
 
 function Cargando({ texto = "Cargando…", error, onReintentar }) {
   return (

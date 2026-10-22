@@ -37,5 +37,6 @@ Proyecto Supabase `qipo-arriendos`. Las migraciones están en `supabase/migratio
 | `20261022040000_web_arrendadas.sql` | aplicada |
 | `20261022050000_web_logo.sql` | aplicada |
 | `20261022060000_acceso_soporte.sql` | aplicada |
+| `20261023000000_reajustes_ipc_uf.sql` | aplicada |
 
 Los administradores de plataforma (Torre de Control HM) se cargan en `privado.admins_invitados` directamente en la base y quedan activos al registrarse con ese correo. La vista `torre_empresas` resume cada empresa cliente (plan, estado, unidades, ingreso mensual en UF).
