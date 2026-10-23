@@ -382,6 +382,7 @@ const HTML_PERMITIDO = new Set(["P", "BR", "B", "STRONG", "I", "EM", "U", "S", "
 const ATRIB_PERMITIDOS = new Set(["style", "src", "href", "alt", "colspan", "rowspan", "align", "width", "height", "border", "cellpadding", "cellspacing", "class", "color", "size", "face"]);
 function urlSegura(u, img) {
   const s = String(u || "").trim();
+  if (img && /^privado:[0-9a-f-]{36}\/[0-9a-f-]{36}\.jpg$/i.test(s)) return true;
   return /^https:\/\//i.test(s) || (img && /^data:image\/(png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(s)) || /^(mailto:|tel:|#)/i.test(s) && !img;
 }
 function limpiarHTML(html) {
@@ -399,6 +400,7 @@ function limpiarHTML(html) {
       const nom = a.name.toLowerCase();
       if (!ATRIB_PERMITIDOS.has(nom)) n.removeAttribute(a.name);
       else if ((nom === "src" || nom === "href") && !urlSegura(a.value, nom === "src")) n.removeAttribute(a.name);
+      else if (nom === "src" && a.value.startsWith("privado:")) n.setAttribute("src", urlFoto(a.value) || "");
       else if (nom === "style" && /(expression|url\s*\(|javascript:|@import|behavior)/i.test(a.value)) n.removeAttribute(a.name);
     });
     if (n.tagName === "A") { n.setAttribute("rel", "noopener noreferrer"); n.setAttribute("target", "_blank"); }
@@ -412,6 +414,11 @@ const imgSegura = f => urlSegura(f, true) ? `<img src="${esc(f)}"` : `<img alt="
 function imprimirHTML(titulo, cuerpo) {
   const w = window.open("", "_blank");
   if (!w) { alert("Permite las ventanas emergentes para imprimir o guardar en PDF."); return; }
+  const refs = String(cuerpo).match(/privado:[0-9a-f-]+\/[0-9a-f-]+\.jpg/gi) || [];
+  if (refs.length) { w.document.write("Preparando…"); firmarFotos(refs).catch(() => {}).finally(() => { w.document.open(); escribirImpresion(w, titulo, cuerpo); }); return; }
+  escribirImpresion(w, titulo, cuerpo);
+}
+function escribirImpresion(w, titulo, cuerpo) {
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(titulo)}</title>
     <style>body{font-family:Georgia,serif;font-size:13px;line-height:1.65;max-width:760px;margin:30px auto;padding:0 24px;color:#111}
     h1,h2{font-family:Arial,sans-serif;text-align:center}h2{font-size:16px}p{text-align:justify;margin:0 0 10px}
@@ -432,10 +439,10 @@ function descargarWord(nombre, html) {
 
 // Excel real (.xlsx): la librería se carga solo cuando se exporta; si no carga, se descarga CSV
 let cargaXLSX = null;
+const cargarXLSX = () => (cargaXLSX = cargaXLSX || new Promise((ok, ko) => { const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; s.onload = ok; s.onerror = () => { cargaXLSX = null; ko(new Error("No se pudo cargar el lector de Excel")); }; document.head.appendChild(s); }));
 async function descargarExcel(nombre, filas) {
   try {
-    cargaXLSX = cargaXLSX || new Promise((ok, ko) => { const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; s.onload = ok; s.onerror = ko; document.head.appendChild(s); });
-    await cargaXLSX;
+    await cargarXLSX();
     const hoja = XLSX.utils.aoa_to_sheet(filas);
     hoja["!cols"] = filas[0].map((_, i) => ({ wch: Math.min(40, Math.max(10, ...filas.map(f => String(f[i] ?? "").length))) }));
     const libro = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(libro, hoja, "Datos");
@@ -491,12 +498,30 @@ async function subirLogo(empresaId, file) {
   return sb.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
 }
 
-async function subirFoto(empresaId, dataURL) {
+// Fotos de la propiedad: bucket público (se comparten y publican). Fotos del inventario (interior,
+// llaves, artefactos): bucket privado; se guardan como "privado:<ruta>" y se ven con enlaces firmados.
+async function subirFoto(empresaId, dataURL, privado = false) {
   const blob = await (await fetch(dataURL)).blob();
   const ruta = `${empresaId}/${uid()}.jpg`;
-  const { error } = await sb.storage.from("fotos").upload(ruta, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
+  const bucket = privado ? "privado" : "fotos";
+  const { error } = await sb.storage.from(bucket).upload(ruta, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
   if (error) throw error;
-  return sb.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
+  return privado ? "privado:" + ruta : sb.storage.from("fotos").getPublicUrl(ruta).data.publicUrl;
+}
+const fotosFirmadas = new Map(); // "privado:<ruta>" → { url, vence }
+const urlFoto = ref => !String(ref || "").startsWith("privado:") ? ref : ((fotosFirmadas.get(ref) || {}).url || "");
+async function firmarFotos(refs) {
+  const faltan = [...new Set(refs.filter(r => String(r || "").startsWith("privado:") && !((fotosFirmadas.get(r) || {}).vence > Date.now())))];
+  if (!faltan.length) return false;
+  const { data } = await sb.storage.from("privado").createSignedUrls(faltan.map(r => r.slice(8)), 3600);
+  (data || []).forEach((d, i) => d && d.signedUrl && fotosFirmadas.set(faltan[i], { url: d.signedUrl, vence: Date.now() + 3300000 }));
+  return true;
+}
+// Re-renderiza cuando llegan los enlaces firmados de las fotos privadas
+function useFotosFirmadas(refs) {
+  const [, setN] = useState(0);
+  const clave = (refs || []).join("|");
+  useEffect(() => { let vivo = true; firmarFotos(refs || []).then(cambio => cambio && vivo && setN(n => n + 1)).catch(() => {}); return () => { vivo = false; }; }, [clave]);
 }
 
 const num = v => v === "" || v == null || isNaN(Number(v)) ? null : Number(v);
@@ -608,7 +633,7 @@ async function cargarEmpresa(E) {
       }),
     })),
     documentos: docs.map(d => ({ id: d.id, propId: propDeUnidad[d.unidad_id], unidadId: d.unidad_id, tipo: d.tipo, titulo: d.titulo, fecha: d.creado.slice(0, 10), autor: d.autor_nombre || "", html: d.html })),
-    interesados: ints.map(x => ({ id: x.id, nombre: vacio(x.nombre), telefono: vacio(x.telefono), email: vacio(x.email), nota: vacio(x.nota), canal: vacio(x.canal), por: x.por_nombre || "", propId: propDeUnidad[x.unidad_id], unidadId: x.unidad_id, fecha: x.creado.slice(0, 10) })),
+    interesados: ints.map(x => ({ id: x.id, nombre: vacio(x.nombre), telefono: vacio(x.telefono), email: vacio(x.email), nota: vacio(x.nota), canal: vacio(x.canal), por: x.por_nombre || "", propId: propDeUnidad[x.unidad_id], unidadId: x.unidad_id, fecha: x.creado.slice(0, 10), creado: x.creado })),
     bitacora: bit.map(b => ({ t: Date.parse(b.creado), u: b.usuario || "—", a: b.accion })),
   };
 }
@@ -1047,7 +1072,7 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
     case "inventario": {
       const items = u.inventario || [];
       const recintos = [...new Set(items.map(i => i.recinto || "General"))];
-      const fotos = i => (i.fotos || []).map(f => `${imgSegura(f)} style="width:110px;height:82px;object-fit:cover;margin:4px 4px 0 0;border-radius:4px"/>`).join("");
+      const fotos = i => (i.fotos || []).map(f => `${imgSegura(urlFoto(f))} style="width:110px;height:82px;object-fit:cover;margin:4px 4px 0 0;border-radius:4px"/>`).join("");
       const tablas = recintos.map(rc => `<p><b>${h(rc)}</b></p><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;margin-bottom:12px"><tr><td><b>Ítem</b></td><td><b>Cant.</b></td><td><b>Estado</b></td><td><b>Observaciones y fotos</b></td></tr>${
         items.filter(i => (i.recinto || "General") === rc).map(i => `<tr><td>${h(i.nombre)}</td><td>${h(i.cantidad || 1)}</td><td>${ESTADOS_INV[i.estado] || "—"}</td><td>${h(i.notas || "")}${(i.fotos || []).length ? "<br/>" + fotos(i) : ""}</td></tr>`).join("")}</table>`).join("");
       return `<h2>ACTA DE INVENTARIO</h2><p>${partes}, dejan constancia del siguiente inventario del inmueble ubicado en ${inmueble}, que se entrega junto con el contrato de arrendamiento y que el Arrendatario se obliga a restituir en el mismo estado, salvo el desgaste producido por el uso legítimo:</p>
@@ -1467,9 +1492,17 @@ function Dona({ ocupadas, libres }) {
   );
 }
 
+// Contactos que llegaron desde la página web y aún no se revisan (se marcan vistos al abrir Desocupadas)
+const claveVistos = st => "qipo-web-visto-" + st.empresa.id;
+const contactosWebNuevos = st => { const visto = local.get(claveVistos(st)) || ""; return st.interesados.filter(x => x.canal === "Sitio web" && (x.creado || x.fecha) > visto); };
+
 function Alertas() {
   const { st, hoy, uf, abrirFicha } = useApp();
   const items = [];
+  contactosWebNuevos(st).forEach(x => {
+    const p = st.propiedades.find(y => y.id === x.propId), u = p && p.unidades.find(y => y.id === x.unidadId);
+    if (p && u) items.push({ p, u, ord: 0.5, web: true, txt: `${x.nombre}${x.telefono ? " · " + x.telefono : ""}${x.email ? " · " + x.email : ""} pidió información desde la web` });
+  });
   listarUnidades(st).forEach(({ p, u }) => {
     const r = calcUnidad(u, hoy, uf);
     if (["atrasado", "hoy", "proximo"].includes(r.estado)) items.push({ p, u, r, ord: EST[r.estado].ord, txt: r.estado === "atrasado" ? `${r.deudas.length} mes(es) · ${fmtCLP(r.deudaCLP)}${r.multa ? " (incluye multa)" : ""}` : `Vence ${fmtFecha(r.proxVenc)} · ${fmtRenta(u.contrato)}` });
@@ -1487,10 +1520,10 @@ function Alertas() {
     <div className="grid" style={{ gap: 8 }}>
       {items.slice(0, 12).map((x, i) => (
         <div key={i} className="alert-row" onClick={() => abrirFicha(x.p.id, x.u.id)}>
-          {x.termino ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>📄 Contrato</span> : x.reajuste ? <span className="tag" style={{ background: C.warningBg, color: C.warning }}>📈 Reajuste</span> : <Badge estado={x.r.estado} />}
+          {x.web ? <span className="tag" style={{ background: C.successBg, color: C.success }}>📩 Web</span> : x.termino ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>📄 Contrato</span> : x.reajuste ? <span className="tag" style={{ background: C.warningBg, color: C.warning }}>📈 Reajuste</span> : <Badge estado={x.r.estado} />}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 600, fontSize: 13 }}>{nombreUnidad(x.p, x.u)}</div>
-            <div className="muted">{x.u.contrato.arrendatario?.nombre} · {x.txt}</div>
+            <div className="muted">{x.web ? x.txt : `${x.u.contrato.arrendatario?.nombre} · ${x.txt}`}</div>
           </div>
           <span className="muted">›</span>
         </div>
@@ -1739,10 +1772,11 @@ const contratoVacio = () => ({
 });
 const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, inventario: [], contrato: null, publicar: true, operacion: "arriendo", precioVentaUF: "" });
 
-function Fotos({ fotos, onChange, editable = true }) {
+function Fotos({ fotos, onChange, editable = true, privado = false }) {
   const { st, toast } = useApp();
   const [ver, setVer] = useState(null);
   const [subiendo, setSubiendo] = useState(0);
+  useFotosFirmadas(fotos);
   // Se comprimen en el navegador y se suben a Storage; en la base queda solo la URL
   const subir = async e => {
     const files = Array.from(e.target.files || []);
@@ -1750,7 +1784,7 @@ function Fotos({ fotos, onChange, editable = true }) {
     setSubiendo(files.length);
     const nuevas = [];
     for (const f of files) {
-      try { nuevas.push(await subirFoto(st.empresa.id, await comprimirImagen(f))); }
+      try { nuevas.push(await subirFoto(st.empresa.id, await comprimirImagen(f), privado)); }
       catch (err) { toast("No se pudo subir una foto: " + mensajeError(err)); }
       setSubiendo(n => n - 1);
     }
@@ -1761,7 +1795,7 @@ function Fotos({ fotos, onChange, editable = true }) {
       <div className="gallery">
         {(fotos || []).map((src, i) => (
           <div key={i} className="ph">
-            <img src={src} onClick={() => setVer(src)} alt="" />
+            <img src={urlFoto(src)} onClick={() => setVer(urlFoto(src))} alt="" />
             {editable && <button type="button" onClick={() => onChange(fotos.filter((_, j) => j !== i))}>✕</button>}
           </div>
         ))}
@@ -2749,6 +2783,7 @@ function InventarioTab({ p, u, setModal }) {
   const { update, user } = useApp();
   const [editar, setEditar] = useState(null);
   const items = u.inventario || [];
+  useFotosFirmadas(items.flatMap(i => i.fotos || []));
   const puedeEditar = puede(user, "editar");
   const recintos = [...new Set(items.map(i => i.recinto || "General"))];
 
@@ -2786,7 +2821,7 @@ function InventarioTab({ p, u, setModal }) {
           <div className="grid" style={{ gap: 6 }}>
             {items.filter(i => (i.recinto || "General") === rc).map(i => (
               <div key={i.id} className="alert-row" onClick={() => puedeEditar && setEditar({ ...i })} style={{ cursor: puedeEditar ? "pointer" : "default" }}>
-                {(i.fotos || [])[0] ? <img src={i.fotos[0]} alt="" style={{ width: 52, height: 40, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} /> : <span style={{ fontSize: 22, width: 52, textAlign: "center" }}>📦</span>}
+                {(i.fotos || [])[0] ? <img src={urlFoto(i.fotos[0])} alt="" style={{ width: 52, height: 40, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} /> : <span style={{ fontSize: 22, width: 52, textAlign: "center" }}>📦</span>}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{i.nombre}{Number(i.cantidad) > 1 ? ` × ${i.cantidad}` : ""}</div>
                   <div className="muted">{i.notas || ""}{(i.fotos || []).length ? `${i.notas ? " · " : ""}${i.fotos.length} foto${i.fotos.length > 1 ? "s" : ""}` : ""}</div>
@@ -2817,7 +2852,7 @@ function InventarioTab({ p, u, setModal }) {
           </div>
           <datalist id="recintos-inv">{RECINTOS.map(r => <option key={r} value={r} />)}</datalist>
           <div className="label" style={{ marginTop: 14 }}>Fotos</div>
-          <Fotos fotos={editar.fotos} onChange={f => setEditar({ ...editar, fotos: f })} />
+          <Fotos fotos={editar.fotos} privado onChange={f => setEditar({ ...editar, fotos: f })} />
         </Modal>
       )}
     </div>
@@ -2834,9 +2869,15 @@ function DocumentoModal({ p, u, tipoInicial, doc, onClose }) {
   // documento guardado: se abre con su texto editado; al cambiar el tipo o "Restablecer" se vuelve a la plantilla
   const [guardado, setGuardado] = useState(doc ? doc.html : null);
   const ref = useRef(null);
+  useEffect(() => {
+    const refs = [...(tipo === "inventario" ? (u.inventario || []).flatMap(i => i.fotos || []) : []), ...((doc && doc.html.match(/privado:[0-9a-f-]+\/[0-9a-f-]+\.jpg/gi)) || [])];
+    firmarFotos(refs).then(c => { if (c) { setVersion(v => v + 1); if (guardado != null) setGuardado(g => g + " "); } }).catch(() => {});
+  }, [tipo]);
   const html = useMemo(() => guardado ?? generarDocumento(tipo, { st, p, u, extra, hoy, uf }), [tipo, extra, version, guardado]);
   useEffect(() => { if (ref.current) ref.current.innerHTML = limpiarHTML(html); }, [html]);
   const titulo = doc && guardado != null ? doc.titulo : `${TIPOS_DOC[tipo]} - ${nombreUnidad(p, u)}`;
+  // al guardar, los enlaces firmados de fotos privadas vuelven a ser referencias (los enlaces vencen)
+  const conReferencias = x => [...fotosFirmadas.entries()].reduce((t, [r, v]) => t.split(v.url.replace(/&/g, "&amp;")).join(r).split(v.url).join(r), x);
   const actual = () => limpiarHTML(ref.current ? ref.current.innerHTML : html);
   const c = u.contrato;
   const e = st.empresa;
@@ -2858,10 +2899,10 @@ function DocumentoModal({ p, u, tipoInicial, doc, onClose }) {
   }, `Aplicó al contrato de "${nombreUnidad(p, u)}" el ${TIPOS_DOC[tipo].toLowerCase()}${extra.nuevoValor ? `: renta ${extra.nuevoValor} ${c.moneda}` : ""}${tipo === "anexo_prorroga" ? `, término ${fmtFecha(extra.nuevoTermino)}` : ""}`);
   const guardar = () => {
     if (doc && guardado != null) {
-      update(s => { const d = s.documentos.find(x => x.id === doc.id); if (d) d.html = actual(); }, `Editó "${doc.titulo}"`);
+      update(s => { const d = s.documentos.find(x => x.id === doc.id); if (d) d.html = conReferencias(actual()); }, `Editó "${doc.titulo}"`);
       toast("Documento actualizado"); return;
     }
-    update(s => { s.documentos.unshift({ id: uid(), propId: p.id, unidadId: u.id, tipo, titulo, fecha: toISO(new Date()), autor: user.nombre, html: actual() }); }, `Generó "${titulo}"`);
+    update(s => { s.documentos.unshift({ id: uid(), propId: p.id, unidadId: u.id, tipo, titulo, fecha: toISO(new Date()), autor: user.nombre, html: conReferencias(actual()) }); }, `Generó "${titulo}"`);
     if (aplicable && confirm(tipo === "anexo_renta"
       ? `¿Aplicar también la nueva renta (${extra.nuevoValor} ${c.moneda}) al contrato desde ${nombrePeriodo(extra.desde.slice(0, 7)).toLowerCase()}? Los cobros desde ese mes saldrán con la renta nueva.`
       : `¿Aplicar también el nuevo término (${fmtFecha(extra.nuevoTermino)})${extra.nuevoValor ? " y la nueva renta" : ""} al contrato?`)) { aplicarAlContrato(); toast("Documento guardado y aplicado al contrato"); return; }
@@ -3013,6 +3054,8 @@ function exportarCobranza(st, hoy, uf, toast) {
 // ─── DISPONIBLES ──────────────────────────────────────────────────────────────
 function DisponiblesView() {
   const { st, uf, abrirFicha } = useApp();
+  // al abrir Desocupadas los contactos de la web quedan vistos
+  useEffect(() => { const t = setTimeout(() => local.set(claveVistos(st), new Date().toISOString()), 1500); return () => clearTimeout(t); }, []);
   const [compartir, setCompartir] = useState(null);
   const libres = listarUnidades(st).filter(x => !x.u.contrato);
   const filtroFn = useCallback(pt => pt.cp.libres > 0, []);
@@ -4025,6 +4068,156 @@ function CobrosAdmin({ d, editable, accion }) {
   );
 }
 
+// ─── IMPORTAR CARTERA DESDE EXCEL ─────────────────────────────────────────────
+// Una fila por unidad. Filas con el mismo nombre de propiedad forman un edificio o centro con varias
+// unidades. Si la fila trae arrendatario, se crea el contrato vigente; "Al día hasta" evita deuda inventada.
+const COLUMNAS_IMPORT = ["Propiedad", "Dirección", "Comuna", "Ciudad", "Tipo", "Unidad", "m2", "Dormitorios", "Baños", "Estacionamientos",
+  "Arrendatario", "RUT arrendatario", "Teléfono", "Correo", "Inicio", "Término", "Día de pago", "Moneda", "Renta", "Garantía", "IVA", "Al día hasta", "Latitud", "Longitud"];
+const TIPO_IMPORT = { casa: "casa", departamento: "depto", depto: "depto", oficina: "oficina", local: "local", "local comercial": "local", bodega: "bodega", terreno: "terreno" };
+const normCol = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
+function fechaImport(v) {
+  if (v == null || v === "") return "";
+  if (v instanceof Date) return toISO(v);
+  if (typeof v === "number") { const d = new Date(Math.round((v - 25569) * 86400000)); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`; } // fecha de Excel
+  const s = String(v).trim(); let m;
+  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return `${m[1]}-${pad(+m[2])}-${pad(+m[3])}`;
+  if ((m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/))) return `${m[3]}-${pad(+m[2])}-${pad(+m[1])}`;
+  return null;
+}
+function mesImport(v) {
+  if (v == null || v === "") return "";
+  const f = fechaImport(v); if (f) return f.slice(0, 7);
+  const s = String(v).trim(); let m;
+  if ((m = s.match(/^(\d{4})-(\d{1,2})$/))) return `${m[1]}-${pad(+m[2])}`;
+  if ((m = s.match(/^(\d{1,2})[\/.-](\d{4})$/))) return `${m[2]}-${pad(+m[1])}`;
+  return null;
+}
+// números chilenos: "450.000" (miles con punto), "18,5" (decimal con coma) o "18.5"
+function numImport(v) {
+  if (v == null || v === "") return "";
+  if (typeof v === "number") return v;
+  let s = String(v).replace(/\$|\s|UF|CLP/gi, "");
+  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, "");
+  return Number(s);
+}
+// Convierte las filas del Excel en propiedades de la app, con los errores por fila
+function filasAPropiedades(filas) {
+  const errores = [], props = new Map();
+  filas.forEach((f, i) => {
+    const n = i + 2, err = t => errores.push(`Fila ${n}: ${t}`);
+    const nombre = String(f.propiedad || "").trim();
+    if (!nombre) return err("falta el nombre de la propiedad");
+    const tipo = TIPO_IMPORT[String(f.tipo || "casa").trim().toLowerCase()] || "otro";
+    let p = props.get(nombre.toLowerCase());
+    if (!p) {
+      const lat = numImport(f.latitud), lng = numImport(f.longitud);
+      p = { id: uid(), tipo: "propiedad", nombre, direccion: String(f.direccion || "").trim(), comuna: String(f.comuna || "").trim(), ciudad: String(f.ciudad || "").trim() || "Santiago",
+        lat: lat === "" || isNaN(lat) ? null : lat, lng: lng === "" || isNaN(lng) ? null : lng, rol: "", notas: "", arrendador: {}, propietarioId: "", unidades: [] };
+      props.set(nombre.toLowerCase(), p);
+    }
+    const u = { ...unidadVacia(tipo, String(f.unidad || "").trim() || (p.unidades.length ? `Unidad ${p.unidades.length + 1}` : "Unidad principal")),
+      m2: numImport(f.m2), dormitorios: numImport(f.dormitorios), banos: numImport(f.banos), estacionamientos: numImport(f.estacionamientos) };
+    if (String(f.arrendatario || "").trim()) {
+      const inicio = fechaImport(f.inicio), termino = fechaImport(f.termino), alDia = mesImport(f.aldiahasta);
+      const moneda = String(f.moneda || "UF").trim().toUpperCase() === "CLP" || /peso|\$/i.test(String(f.moneda || "")) ? "CLP" : "UF";
+      const valor = numImport(f.renta), dia = Number(f.diadepago) || 5;
+      if (!inicio) return err("falta o no se entiende la fecha de inicio (usa AAAA-MM-DD o DD-MM-AAAA)");
+      if (termino === null) return err("no se entiende la fecha de término");
+      if (alDia === null) return err("no se entiende \"Al día hasta\" (usa AAAA-MM o MM-AAAA)");
+      if (!(valor > 0)) return err("falta la renta");
+      if (moneda === "CLP" && valor < 1000) return err(`la renta ${valor} en pesos parece estar en UF (revisa la columna Moneda)`);
+      u.contrato = { ...contratoVacio(), arrendatario: { nombre: String(f.arrendatario).trim(), rut: String(f.rutarrendatario || "").trim(), email: String(f.correo || "").trim(), telefono: String(f.telefono || "").trim(), giro: "", domicilio: "", representante: "" },
+        inicio, termino: termino || "", diaPago: Math.min(31, Math.max(1, dia)), moneda, valor, garantia: numImport(f.garantia), iva: /^(si|sí|s|x|1|true)$/i.test(String(f.iva || "").trim()), alDiaHasta: alDia || "" };
+    }
+    p.unidades.push(u);
+  });
+  // las propiedades cuyas filas tenían errores quedan sin unidades: no se importan
+  const lista = [...props.values()].filter(p => p.unidades.length).map(p => p.unidades.length > 1 ? { ...p, tipo: "centro" } : p);
+  return { props: lista, errores };
+}
+
+function ImportarExcel() {
+  const { st, update, toast } = useApp();
+  const [res, setRes] = useState(null);
+  const [trabajando, setTrabajando] = useState("");
+  const archivo = useRef(null);
+  const plantilla = () => descargarExcel("plantilla-cartera-qipo", [COLUMNAS_IMPORT,
+    ["Casa Los Robles", "Los Robles 123", "Ñuñoa", "Santiago", "Casa", "", 120, 3, 2, 1, "María Pérez", "12.345.678-9", "+56912345678", "maria@correo.cl", "2025-03-01", "2027-02-28", 5, "UF", 18, 18, "No", "2026-09", "", ""],
+    ["Edificio Centro", "Huérfanos 1000", "Santiago", "Santiago", "Departamento", "Depto 501", 55, 2, 1, 0, "Juan Soto", "15.111.222-3", "+56987654321", "", "01-06-2026", "", 1, "CLP", 450000, 450000, "No", "", "", ""],
+    ["Edificio Centro", "Huérfanos 1000", "Santiago", "Santiago", "Departamento", "Depto 502", 55, 2, 1, 0, "", "", "", "", "", "", "", "", "", "", "", "", "", ""]]);
+  const leer = async e => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    setTrabajando("Leyendo el archivo…");
+    try {
+      await cargarXLSX();
+      const libro = XLSX.read(await f.arrayBuffer());
+      const crudas = XLSX.utils.sheet_to_json(libro.Sheets[libro.SheetNames[0]], { defval: "" });
+      const filas = crudas.map(r => Object.fromEntries(Object.entries(r).map(([k, v]) => [normCol(k), v]))).filter(r => Object.values(r).some(v => String(v).trim()));
+      if (!filas.length) throw new Error("El archivo no tiene filas con datos");
+      if (!("propiedad" in filas[0])) throw new Error("No encontré la columna \"Propiedad\". Usa la plantilla.");
+      const r = filasAPropiedades(filas);
+      // no duplicar lo que ya existe
+      const existentes = new Set(st.propiedades.map(p => p.nombre.trim().toLowerCase()));
+      r.repetidas = r.props.filter(p => existentes.has(p.nombre.trim().toLowerCase())).map(p => p.nombre);
+      r.props = r.props.filter(p => !existentes.has(p.nombre.trim().toLowerCase()));
+      setRes(r);
+    } catch (err) { toast(err.message || "No se pudo leer el archivo"); }
+    setTrabajando("");
+  };
+  const importar = async () => {
+    const props = structuredClone(res.props);
+    const max = st.suscripcion && st.suscripcion.maxUnidades, total = listarUnidades(st).length + props.reduce((t, p) => t + p.unidades.length, 0);
+    if (max && total > max) return toast(`Tu plan permite hasta ${max} unidades y quedarías con ${total}. Cambia de plan o importa menos filas.`);
+    // ubicar en el mapa las que no traen coordenadas (OpenStreetMap, 1 por segundo)
+    const sinUbicar = props.filter(p => p.lat == null || p.lng == null);
+    for (let i = 0; i < sinUbicar.length; i++) {
+      const p = sinUbicar[i];
+      setTrabajando(`Ubicando en el mapa ${i + 1} de ${sinUbicar.length}…`);
+      try {
+        const q = [p.direccion, p.comuna, p.ciudad, "Chile"].filter(Boolean).join(", ");
+        const j = await (await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=cl&q=${encodeURIComponent(q)}`, { headers: { "Accept-Language": "es" } })).json();
+        if (j[0]) { p.lat = Number(Number(j[0].lat).toFixed(6)); p.lng = Number(Number(j[0].lon).toFixed(6)); }
+      } catch {}
+      if (p.lat == null) { p.lat = -33.4489; p.lng = -70.6693; p.notas = "Ubicación aproximada: ajústala en el mapa al editar la propiedad."; }
+      if (i < sinUbicar.length - 1) await new Promise(r => setTimeout(r, 1100));
+    }
+    setTrabajando("");
+    const n = props.reduce((t, p) => t + p.unidades.length, 0), c = props.reduce((t, p) => t + p.unidades.filter(u => u.contrato).length, 0);
+    update(s => { s.propiedades.push(...props); }, `Importó desde Excel ${props.length} propiedades (${n} unidades, ${c} contratos)`);
+    toast(`Importadas ${props.length} propiedades, ${n} unidades y ${c} contratos`);
+    setRes(null);
+  };
+  return (
+    <div className="card">
+      <div className="h2">Importar cartera desde Excel</div>
+      <div className="muted" style={{ marginBottom: 10 }}>Carga todas tus propiedades, unidades y contratos de una vez. Una fila por unidad: las filas con el mismo nombre de propiedad forman un edificio o centro. Para contratos que ya venían corriendo, completa "Al día hasta" con el último mes pagado y no se generará deuda de meses anteriores.</div>
+      <div className="row">
+        <button className="btn btn-ghost" onClick={plantilla}>⬇️ Descargar plantilla</button>
+        <button className="btn btn-primary" onClick={() => archivo.current.click()} disabled={!!trabajando}>⬆️ Subir Excel o CSV</button>
+        <input ref={archivo} type="file" accept=".xlsx,.xls,.csv" hidden onChange={leer} />
+        {trabajando && <span className="muted">{trabajando}</span>}
+      </div>
+      {res && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 600 }}>{res.props.length} propiedades nuevas · {res.props.reduce((t, p) => t + p.unidades.length, 0)} unidades · {res.props.reduce((t, p) => t + p.unidades.filter(u => u.contrato).length, 0)} contratos</div>
+          {res.repetidas.length > 0 && <div className="muted">Se omiten porque ya existen: {res.repetidas.join(", ")}</div>}
+          {res.errores.length > 0 && <div className="card" style={{ background: C.warningBg, padding: 10, marginTop: 8, fontSize: 12.5 }}><b>Filas con problemas (no se importan):</b>{res.errores.slice(0, 15).map((e, i) => <div key={i}>{e}</div>)}{res.errores.length > 15 && <div>… y {res.errores.length - 15} más</div>}</div>}
+          {res.props.length > 0 && <div className="table-wrap" style={{ marginTop: 8, maxHeight: 260, overflowY: "auto" }}><table>
+            <thead><tr><th>Propiedad</th><th>Unidad</th><th>Arrendatario</th><th className="num">Renta</th><th>Al día hasta</th><th>Ubicación</th></tr></thead>
+            <tbody>{res.props.flatMap(p => p.unidades.map(u => <tr key={u.id}><td>{p.nombre}</td><td>{p.tipo === "centro" ? u.nombre : CATEGORIAS[u.categoria]}</td><td>{u.contrato ? u.contrato.arrendatario.nombre : <span className="muted">Desocupada</span>}</td>
+              <td className="num">{u.contrato ? fmtMonto(u.contrato.valor, u.contrato.moneda) : ""}</td><td>{u.contrato && u.contrato.alDiaHasta ? nombrePeriodo(u.contrato.alDiaHasta) : ""}</td><td>{p.lat != null ? "✓" : <span className="muted">se busca</span>}</td></tr>))}</tbody>
+          </table></div>}
+          <div className="row" style={{ marginTop: 10 }}>
+            {res.props.length > 0 && <button className="btn btn-primary" disabled={!!trabajando} onClick={importar}>Importar {res.props.length} propiedades</button>}
+            <button className="btn btn-ghost" onClick={() => setRes(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Usuarios de la empresa. Super administrador: todo. Administrador: gestiona administradores y
 // corredores (no a los super administradores). Corredor: solo en corredoras, con su % de comisión.
 function UsuariosCard({ accion }) {
@@ -4173,6 +4366,8 @@ function ConfigView() {
         </div>
       </div>
 
+      <ImportarExcel />
+
       <UsuariosCard accion={accion} />
 
       <div className="card">
@@ -4298,6 +4493,18 @@ function App() {
     catch (e) { if (!stRef.current) setError(mensajeError(e)); else toast(mensajeError(e)); }
   }, [empresaId, toast]);
 
+  // Contactos desde la web: la primera vez solo cuentan los que lleguen desde ahora; si llega uno con la app
+  // abierta, se avisa al momento
+  const vistosWeb = useRef(null);
+  useEffect(() => {
+    if (!st) return;
+    if (!local.get(claveVistos(st))) local.set(claveVistos(st), new Date().toISOString());
+    const web = st.interesados.filter(x => x.canal === "Sitio web");
+    const v = vistosWeb.current;
+    if (v && v.e === st.empresa.id) web.filter(x => !v.ids.has(x.id)).forEach(x => toast(`📩 Nuevo contacto desde la web: ${x.nombre}`));
+    vistosWeb.current = { e: st.empresa.id, ids: new Set(web.map(x => x.id)) };
+  }, [st && st.interesados]);
+
   // Recarga cuando otro usuario cambia algo (espera a que terminen los guardados propios)
   const programarRecarga = useCallback(() => {
     clearTimeout(temporizador.current);
@@ -4374,6 +4581,7 @@ function App() {
     ir: v => setVista(v),
   };
   const atrasados = listarUnidades(st).filter(x => x.u.contrato && calcUnidad(x.u, hoy, ctx.uf).estado === "atrasado").length;
+  const webNuevos = contactosWebNuevos(st).length;
   const vistas = VISTAS.filter(v => (!v.soloAdmin || esAdminEmp(user)) && (!v.soloCorredor || user.rol === "corredor"));
   const grupos = [...new Set(vistas.map(v => v.grupo))];
   const vistaOk = vistas.some(v => v.id === vista) ? vista : "panel";
@@ -4395,7 +4603,7 @@ function App() {
               <div className="nav-group-label">{g}</div>
               {vistas.filter(v => v.grupo === g).map(v => (
                 <button key={v.id} className={"nav-item" + (vistaOk === v.id ? " active" : "")} onClick={() => { setVista(v.id); setMenu(false); }}>
-                  <span>{v.icono}</span>{v.label}{v.id === "cobranza" && atrasados > 0 && <span className="nav-badge">{atrasados}</span>}
+                  <span>{v.icono}</span>{v.label}{v.id === "cobranza" && atrasados > 0 && <span className="nav-badge">{atrasados}</span>}{v.id === "disponibles" && webNuevos > 0 && <span className="nav-badge" style={{ background: C.success }} title="Contactos nuevos desde la página web">{webNuevos}</span>}
                 </button>
               ))}
             </div>
