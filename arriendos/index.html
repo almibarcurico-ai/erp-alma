@@ -202,6 +202,15 @@ const css = `
   .doc-editor h2{text-align:center;font-size:16px;margin-bottom:18px;font-family:'Sora',sans-serif}
   .doc-editor p{margin-bottom:10px;text-align:justify}
   @media (max-width:600px){ .doc-editor{padding:20px 16px} .kv{grid-template-columns:110px 1fr} }
+  /* tablas que en el celular se ven como tarjetas (cobranza) */
+  @media (max-width:640px){
+    .tabla-cards thead{display:none}
+    .tabla-cards,.tabla-cards tbody,.tabla-cards tr,.tabla-cards td{display:block;width:100%}
+    .tabla-cards tr{border:1px solid ${C.border};border-radius:12px;margin-bottom:10px;padding:8px 6px;background:#fff}
+    .tabla-cards td{border:none!important;padding:3px 8px!important;text-align:left!important}
+    .tabla-cards td[data-l]::before{content:attr(data-l) ": ";color:${C.textDim};font-size:11.5px;font-weight:500}
+    .table-wrap:has(.tabla-cards){overflow:visible;border:none;background:none}
+  }
 `;
 
 
@@ -248,11 +257,13 @@ const redondearRenta = (v, moneda) => moneda === "CLP" ? Math.round(v) : Math.ro
 const aplicados = c => [...(c.reajustes || [])].sort((a, b) => a.desde.localeCompare(b.desde));
 function rentaMes(c, periodo = periodoDe(new Date())) {
   const base = Number(c.valor) || 0;
-  if (tipoReajuste(c) === "pct") {
-    const n = pasosReajuste(c, periodo);
-    return n ? redondearRenta(base * Math.pow(1 + Number(c.reajuste.pct) / 100, n), c.moneda) : base;
-  }
   const ap = aplicados(c).filter(r => r.desde <= periodo).pop();
+  if (tipoReajuste(c) === "pct") {
+    // % fijo: se calcula solo; un anexo de renta fija una nueva base desde su mes y los pasos siguen después
+    const n = pasosReajuste(c, periodo) - (ap ? pasosReajuste(c, ap.desde) : 0);
+    const b = ap ? Number(ap.valorNuevo) : base;
+    return n > 0 ? redondearRenta(b * Math.pow(1 + Number(c.reajuste.pct) / 100, n), c.moneda) : b;
+  }
   return ap ? Number(ap.valorNuevo) : base;
 }
 // Próximo mes en que sube la renta (para IPC/UF: el siguiente al último aplicado; puede estar vencido)
@@ -261,7 +272,7 @@ function proximoReajuste(c, periodo = periodoDe(new Date())) {
   const p1 = primerReajuste(c), n = Number(c.reajuste.cadaMeses);
   if (!p1) return null;
   if (tipoReajuste(c) === "pct") return sumarMes(p1, pasosReajuste(c, periodo) * n);
-  const ult = aplicados(c).pop();
+  const ult = aplicados(c).filter(r => !(r.detalle && r.detalle.anexo)).pop();
   return ult ? sumarMes(ult.desde, n) : p1;
 }
 // IPC/UF con el mes ya llegado y sin aplicar: los cobros siguen con la renta anterior hasta aplicarlo
@@ -278,12 +289,13 @@ const descripcionReajuste = c => {
 // Historial: los aplicados (IPC/UF) o los pasos ya ocurridos del % fijo
 function historialReajustes(c, periodo = periodoDe(new Date())) {
   if (tipoReajuste(c) !== "pct") return aplicados(c);
+  const anexos = aplicados(c).filter(r => r.desde <= periodo);
   const n = pasosReajuste(c, periodo), p1 = primerReajuste(c), r = [];
   for (let i = 1; i <= n; i++) {
     const desde = sumarMes(p1, (i - 1) * Number(c.reajuste.cadaMeses));
-    r.push({ id: desde, desde, tipo: "pct", variacionPct: Number(c.reajuste.pct), valorAnterior: rentaMes(c, sumarMes(desde, -1)), valorNuevo: rentaMes(c, desde), detalle: { automatico: true } });
+    if (!anexos.some(a => a.desde === desde)) r.push({ id: desde, desde, tipo: "pct", variacionPct: Number(c.reajuste.pct), valorAnterior: rentaMes(c, sumarMes(desde, -1)), valorNuevo: rentaMes(c, desde), detalle: { automatico: true } });
   }
-  return r;
+  return [...r, ...anexos].sort((a, b) => a.desde.localeCompare(b.desde));
 }
 // Normaliza para guardar en contratos.reajuste
 function reajusteAGuardar(c) {
@@ -418,6 +430,26 @@ function descargarWord(nombre, html) {
 }
 
 
+// Excel real (.xlsx): la librería se carga solo cuando se exporta; si no carga, se descarga CSV
+let cargaXLSX = null;
+async function descargarExcel(nombre, filas) {
+  try {
+    cargaXLSX = cargaXLSX || new Promise((ok, ko) => { const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; s.onload = ok; s.onerror = ko; document.head.appendChild(s); });
+    await cargaXLSX;
+    const hoja = XLSX.utils.aoa_to_sheet(filas);
+    hoja["!cols"] = filas[0].map((_, i) => ({ wch: Math.min(40, Math.max(10, ...filas.map(f => String(f[i] ?? "").length))) }));
+    const libro = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(libro, hoja, "Datos");
+    XLSX.writeFile(libro, nombre.replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, "").trim() + ".xlsx");
+  } catch { cargaXLSX = null; descargarCSV(nombre, filas); }
+}
+// Exportar viene en los planes Profesional y Empresa; durante la prueba está habilitado y se avisa
+function permiteExportar(st, toast) {
+  const pl = planCon(st, "exportar");
+  if (!planPermite(st, "exportar")) { toast(`Exportar a Excel está disponible desde el plan ${pl ? pl.nombre : "superior"}.`); return false; }
+  const sus = st.suscripcion;
+  if (sus && sus.estado === "prueba" && !(sus.funciones || []).includes("exportar")) toast(`Exportar está incluido en tu prueba. Al terminar, viene desde el plan ${pl ? pl.nombre : "superior"}.`);
+  return true;
+}
 function descargarCSV(nombre, filas) {
   const celda = v => { const t = String(v ?? ""); return /[";\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
   const texto = filas.map(f => f.map(celda).join(";")).join("\r\n");
@@ -505,7 +537,7 @@ const aContrato = (c, pagos, abonos, reajs = []) => ({
   id: c.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: c.termino || "", diaPago: c.dia_pago, moneda: c.moneda,
   valor: Number(c.valor), iva: !!c.iva, reajuste: c.reajuste || null, garantia: c.garantia == null ? "" : Number(c.garantia), multa: c.multa,
   multasCondonadas: Object.fromEntries((c.multas_condonadas || []).map(p => [p, true])),
-  terminado: c.terminado,
+  terminado: c.terminado, alDiaHasta: c.al_dia_hasta || "",
   reajustes: reajs.filter(r => r.contrato_id === c.id).map(r => ({ id: r.id, desde: r.desde, tipo: r.tipo, variacionPct: Number(r.variacion_pct), detalle: r.detalle || {},
     valorAnterior: Number(r.valor_anterior), valorNuevo: Number(r.valor_nuevo), registradoPor: r.registrado_nombre || "", creado: r.creado })),
   pagos: pagos.filter(p => p.contrato_id === c.id).map(p => ({
@@ -522,7 +554,7 @@ const vacio = v => v == null ? "" : v;
 
 async function cargarEmpresa(E) {
   const f = t => () => sb.from(t).select("*").eq("empresa_id", E);
-  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs, plns, dueños, bancos, liqs, reajs] = await Promise.all([
+  const [emp, sus, props, unis, cons, pags, abns, docs, ints, bit, mies, invs, plns, dueños, bancos, liqs, reajs, cfg] = await Promise.all([
     q(sb.from("empresas").select("*").eq("id", E).single()),
     q(sb.from("suscripciones").select("*, planes(*)").eq("empresa_id", E).maybeSingle()),
     todas(() => f("propiedades")().order("creado")),
@@ -540,6 +572,7 @@ async function cargarEmpresa(E) {
     q(f("propietarios_banco")()),            // solo los administradores los reciben (RLS)
     todas(() => f("liquidaciones")().order("creado", { ascending: false })), // ídem
     todas(f("reajustes")),
+    sb.from("plataforma_config").select("clave, valor"),
   ]);
   const plan = sus && sus.planes;
   const propDeUnidad = Object.fromEntries(unis.map(u => [u.id, u.propiedad_id]));
@@ -548,6 +581,7 @@ async function cargarEmpresa(E) {
     suscripcion: sus ? { planId: sus.plan_id, plan: plan && plan.nombre, maxUnidades: plan && plan.max_unidades, maxUsuarios: plan && plan.max_usuarios,
       funciones: (plan && plan.funciones) || [], precioCLP: sus.precio_clp_pactado ?? (plan && plan.precio_clp), ciclo: sus.ciclo || "mensual",
       estado: sus.estado, pruebaHasta: sus.prueba_hasta, vigenteHasta: sus.vigente_hasta } : null,
+    contactoHM: ((cfg && cfg.data) || []).reduce((o, x) => x.clave === "contacto" ? x.valor || {} : o, {}),
     planes: plns.map(x => ({ id: x.id, nombre: x.nombre, precioCLP: x.precio_clp, maxUnidades: x.max_unidades, maxUsuarios: x.max_usuarios, funciones: x.funciones || [] })),
     propietarios: dueños.map(x => {
       const b = bancos.find(y => y.id === x.id);
@@ -602,7 +636,7 @@ function filas(st, E) {
         t.contratos.set(c.id, { id: c.id, empresa_id: E, unidad_id: u.id, arrendatario: c.arrendatario, inicio: c.inicio, termino: n(c.termino),
           dia_pago: Number(c.diaPago), moneda: c.moneda, valor: num(c.valor), iva: !!c.iva, reajuste: reajusteAGuardar(c), garantia: num(c.garantia), multa: c.multa || { cobrar: false },
           multas_condonadas: Object.keys(c.multasCondonadas || {}).filter(k => c.multasCondonadas[k]).sort(),
-          vigente, terminado: vigente ? null : n(c.terminado) });
+          vigente, terminado: vigente ? null : n(c.terminado), al_dia_hasta: n(c.alDiaHasta) });
         (c.reajustes || []).forEach(r => t.reajustes.set(r.id, { id: r.id, empresa_id: E, contrato_id: c.id, desde: r.desde, tipo: r.tipo, variacion_pct: r.variacionPct,
           detalle: r.detalle || {}, valor_anterior: r.valorAnterior, valor_nuevo: r.valorNuevo, registrado_nombre: n(r.registradoPor) }));
         (c.pagos || []).forEach(pg => t.pagos.set(pg.id, { id: pg.id, empresa_id: E, contrato_id: c.id, periodo: pg.periodo, fecha: pg.fecha,
@@ -704,6 +738,8 @@ function primerPeriodo(c) {
 function periodosContrato(c, hoy) {
   let p = primerPeriodo(c);
   if (!p) return [];
+  // contratos que ya venían corriendo: los meses hasta "al día hasta" se dan por pagados
+  if (c.alDiaHasta && sumarMes(c.alDiaHasta, 1) > p) p = sumarMes(c.alDiaHasta, 1);
   const fin = c.termino ? periodoDe(parseISO(c.termino)) : null;
   const actual = periodoDe(hoy);
   const out = [];
@@ -712,16 +748,18 @@ function periodosContrato(c, hoy) {
 }
 
 // La multa se calcula en la moneda del contrato y solo si el arrendador decidió cobrarla.
-// Superados los días de gracia, se cuenta desde el día siguiente al vencimiento.
+// Superados los días de gracia se cuentan los días desde el vencimiento, o solo los posteriores a la
+// gracia si el contrato lo indica (desdeGracia; los contratos nuevos lo traen activado).
 function calcMulta(c, diasAtraso, periodo) {
   const m = c.multa || {};
   if (!m.cobrar || diasAtraso <= 0) return 0;
   if ((c.multasCondonadas || {})[periodo]) return 0;
   if (diasAtraso <= (Number(m.diasGracia) || 0)) return 0;
   const monto = Number(m.monto) || 0, valor = rentaMes(c, periodo);
+  const dias = m.desdeGracia ? diasAtraso - (Number(m.diasGracia) || 0) : diasAtraso;
   let x = 0;
-  if (m.tipo === "diaria") x = monto * diasAtraso;
-  else if (m.tipo === "diaria_pct") x = valor * monto / 100 * diasAtraso;
+  if (m.tipo === "diaria") x = monto * dias;
+  else if (m.tipo === "diaria_pct") x = valor * monto / 100 * dias;
   else if (m.tipo === "fija") x = monto;
   else if (m.tipo === "pct") x = valor * monto / 100;
   const tope = Number(m.tope) || 0;
@@ -739,7 +777,8 @@ function descripcionMulta(c) {
     fija: `${monto} fija por mes atrasado`,
     pct: `${m.monto}% de la renta por mes atrasado`,
   }[m.tipo] || "";
-  return base + (Number(m.diasGracia) ? `, después de ${m.diasGracia} días de gracia` : "") + (Number(m.tope) ? ` (tope ${c.moneda === "CLP" ? fmtCLP(m.tope) : m.tope + " " + u})` : "");
+  const gracia = Number(m.diasGracia) ? (m.desdeGracia || !m.tipo.startsWith("diaria") ? `, después de ${m.diasGracia} días de gracia` : `, si el atraso supera ${m.diasGracia} días de gracia (contando todos los días desde el vencimiento)`) : "";
+  return base + gracia + (Number(m.tope) ? ` (tope ${c.moneda === "CLP" ? fmtCLP(m.tope) : m.tope + " " + u})` : "");
 }
 
 // Abonos: pagos parciales de un mes. Se llevan a la moneda del contrato (UF al valor del día del abono)
@@ -797,7 +836,8 @@ function calcUnidad(u, hoy, uf) {
   if (proxVenc && c.termino && periodoDe(proxVenc) > periodoDe(parseISO(c.termino))) proxVenc = null;
   const canonCLP = aCLP(rentaMes(c, actual), c.moneda, uf) * conIVA(c);
   const multa = deudas.reduce((s, d) => s + d.multa, 0);
-  const deudaCLP = aCLP(deudas.reduce((t, d) => t + d.saldo, 0) + multa, c.moneda, uf);
+  // redondeado mes a mes, igual que al registrar cada pago (evita diferencias de $1)
+  const deudaCLP = deudas.reduce((t, d) => t + Math.round(aCLP(d.saldo, c.moneda, uf)) + Math.round(aCLP(d.multa, c.moneda, uf)), 0);
   const diasTermino = c.termino ? diffDias(parseISO(c.termino), hoy) : null;
   // Abonos en meses que aún no quedan pagados (para mostrarlos en cobranza)
   const abonosPendCLP = (c.abonos || []).filter(a => !pagados.has(a.periodo)).reduce((t, a) => t + a.montoCLP, 0);
@@ -827,7 +867,7 @@ const nombreUnidad = (p, u) => p.tipo === "centro" ? `${p.nombre} · ${u.nombre}
 
 function resumenFinanciero(st, hoy, uf) {
   const actual = periodoDe(hoy);
-  let esperado = 0, cobrado = 0, porCobrar = 0, morosidad = 0, multas = 0, ocupadas = 0, total = 0;
+  let esperado = 0, cobrado = 0, porCobrar = 0, morosidad = 0, multas = 0, ocupadas = 0, total = 0, rentasCobradas = 0;
   const pagosMes = [], porMes = {};
   for (let i = 5; i >= 0; i--) porMes[sumarMes(actual, -i)] = 0;
   listarUnidades(st).forEach(({ p, u }) => {
@@ -845,14 +885,17 @@ function resumenFinanciero(st, hoy, uf) {
     ocupadas++;
     const r = calcUnidad(u, hoy, uf);
     if (r.periodoActivo) {
-      esperado += r.canonCLP;
-      if (!r.pagados.has(actual)) porCobrar += aCLP(saldoMes(c, actual), c.moneda, uf);
+      // rentas del mes: lo ya cobrado de ese mes (a la UF del día de pago) + lo que falta (a la UF de hoy)
+      const pagadoMes = (c.pagos || []).filter(pg => pg.periodo === actual).reduce((t, pg) => t + (pg.montoCLP || 0), 0)
+        + (c.abonos || []).filter(a => a.periodo === actual).reduce((t, a) => t + a.montoCLP, 0);
+      const falta = r.pagados.has(actual) ? 0 : Math.round(aCLP(saldoMes(c, actual), c.moneda, uf));
+      rentasCobradas += pagadoMes; porCobrar += falta; esperado += pagadoMes + falta;
     }
     morosidad += r.deudaCLP;
     multas += aCLP(r.multa, c.moneda, uf);
   });
   pagosMes.sort((a, b) => (b.registrado || 0) - (a.registrado || 0));
-  return { esperado, cobrado, porCobrar, morosidad, multas, ocupadas, total, libres: total - ocupadas, pagosMes, porMes };
+  return { esperado, cobrado, rentasCobradas, porCobrar, morosidad, multas, ocupadas, total, libres: total - ocupadas, pagosMes, porMes };
 }
 
 
@@ -1017,6 +1060,21 @@ ${tablas || "<p>[Sin ítems registrados. Agrégalos en la pestaña Inventario de
 
 
 // ─── DATOS DE EJEMPLO ─────────────────────────────────────────────────────────
+// Datos de ejemplo: se marcan en las notas para poder borrarlos todos de una vez
+const MARCA_EJEMPLO = "Datos de ejemplo";
+const esEjemplo = p => p.notas === MARCA_EJEMPLO;
+const propiedadesEjemplo = () => datosEjemplo(sinHora(new Date())).map(p => ({ ...p, notas: MARCA_EJEMPLO }));
+function borrarEjemplo(st, update, toast) {
+  const n = st.propiedades.filter(esEjemplo).length;
+  if (!confirm(`¿Borrar las ${n} propiedades de ejemplo con sus contratos y pagos? Tus propiedades reales no se tocan.`)) return;
+  update(s => {
+    const ids = new Set(s.propiedades.filter(esEjemplo).flatMap(p => p.unidades.map(u => u.id)));
+    s.propiedades = s.propiedades.filter(p => !esEjemplo(p));
+    s.documentos = s.documentos.filter(d => !ids.has(d.unidadId)); s.interesados = s.interesados.filter(x => !ids.has(x.unidadId));
+  }, `Borró ${n} propiedades de ejemplo`);
+  toast("Datos de ejemplo borrados");
+}
+
 function datosEjemplo(hoy) {
   const d = hoy.getDate();
   const inicio = toISO(new Date(hoy.getFullYear(), hoy.getMonth() - 8, 1));
@@ -1074,7 +1132,7 @@ const ROLES = { super_admin: "Super administrador", admin: "Administrador", corr
 const nombreRol = r => ROLES[r] || r;
 const esAdminEmp = u => !!u && (u.rol === "super_admin" || u.rol === "admin");
 const PERMISOS_CORREDOR = ["editar", "pagos", "contratos", "comunicar", "interesados"];
-const puede = (user, accion) => !!user && (esAdminEmp(user) || PERMISOS_CORREDOR.includes(accion));
+const puede = (user, accion) => !!user && !user.soloLectura && (esAdminEmp(user) || PERMISOS_CORREDOR.includes(accion));
 // Funciones según el plan (en la prueba se habilita todo). La base valida lo mismo con privado.plan_permite.
 const FUNCIONES_PLAN = { propietarios: "Propietarios y liquidaciones", exportar: "Exportar a Excel", soporte_prioritario: "Soporte prioritario y migración de datos" };
 const planPermite = (st, funcion) => !!st.suscripcion && (st.suscripcion.estado === "prueba" || st.suscripcion.funciones.includes(funcion));
@@ -1099,8 +1157,9 @@ function Modal({ titulo, onClose, children, pie, ancho }) {
   const ref = useRef(null);
   useEffect(() => {
     // Escape cierra solo la ventana de más arriba
-    const f = e => { if (e.key !== "Escape") return; const todas = document.querySelectorAll(".overlay"); if (todas[todas.length - 1] === ref.current) onClose(); };
-    window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f);
+    // (en captura, antes que la ficha de atrás; marca la tecla como usada para que la ficha no se cierre)
+    const f = e => { if (e.key !== "Escape" || e.defaultPrevented) return; const todas = document.querySelectorAll(".overlay"); if (todas[todas.length - 1] === ref.current) { e.preventDefault(); onClose(); } };
+    window.addEventListener("keydown", f, true); return () => window.removeEventListener("keydown", f, true);
   }, [onClose]);
   return ReactDOM.createPortal(
     <div ref={ref} className="overlay" onMouseDown={e => e.target === e.currentTarget && onClose()}>
@@ -1191,7 +1250,8 @@ function MapaBase({ puntos, onSelect, alto = 520, tooltips = true, elegir, onEle
     mapa.current = m;
     const ro = new ResizeObserver(() => m.invalidateSize());
     ro.observe(ref.current);
-    return () => { ro.disconnect(); m.remove(); };
+    // detener animaciones antes de quitar el mapa (evita el error _leaflet_pos al cambiar de vista a mitad de un zoom)
+    return () => { ro.disconnect(); m.stop(); m.off(); m.remove(); };
   }, []);
 
   useEffect(() => {
@@ -1210,7 +1270,7 @@ function MapaBase({ puntos, onSelect, alto = 520, tooltips = true, elegir, onEle
     });
     if (ajustar && !ajustado.current && puntos.length) {
       ajustado.current = true;
-      m.fitBounds(L.latLngBounds(puntos.map(p => [p.lat, p.lng])).pad(0.2), { maxZoom: 15 });
+      m.fitBounds(L.latLngBounds(puntos.map(p => [p.lat, p.lng])).pad(0.2), { maxZoom: 15, animate: false });
     }
   }, [puntos]);
 
@@ -1422,7 +1482,7 @@ function Alertas() {
     if (r.diasTermino != null && r.diasTermino <= DIAS_AVISO_TERMINO) items.push({ p, u, r, ord: 3, termino: true, txt: r.diasTermino < 0 ? `Contrato venció el ${fmtFecha(u.contrato.termino)}` : `Contrato termina en ${r.diasTermino} días (${fmtFecha(u.contrato.termino)})` });
   });
   items.sort((a, b) => a.ord - b.ord);
-  if (!items.length) return <div className="empty">✅ Sin alertas: todos los arriendos están al día.</div>;
+  if (!items.length) return <div className="empty">{listarUnidades(st).some(x => x.u.contrato) ? "✅ Sin alertas: todos los arriendos están al día." : "Aún no tienes arriendos registrados: las alertas de cobranza, vencimientos y reajustes aparecerán aquí."}</div>;
   return (
     <div className="grid" style={{ gap: 8 }}>
       {items.slice(0, 12).map((x, i) => (
@@ -1439,6 +1499,39 @@ function Alertas() {
   );
 }
 
+// Primeros pasos para una empresa nueva (se oculta al completarlos o al cerrarla)
+function PrimerosPasos() {
+  const { st, user, ir, update, toast } = useApp();
+  const clave = "qipo-pasos-" + st.empresa.id;
+  const [oculto, setOculto] = useState(() => !!local.get(clave));
+  const e = st.empresa, unidades = listarUnidades(st);
+  const pasos = [
+    ["Completa los datos de tu empresa (RUT, domicilio, representante)", !!(e.rut && e.direccion && e.representante), "config"],
+    ["Agrega tu primera propiedad", unidades.length > 0, "propiedades"],
+    ["Registra un contrato de arriendo (si ya venía corriendo, usa “Al día hasta”)", unidades.some(x => x.u.contrato), "propiedades"],
+    ["Invita a tu equipo", st.usuarios.length + st.invitaciones.length > 1, "config"],
+    ["Publica tu página web con las propiedades disponibles", !!(e.web && e.web.activa), "config"],
+  ];
+  const hechos = pasos.filter(p => p[1]).length;
+  if (oculto || hechos === pasos.length || !esAdminEmp(user)) return null;
+  return (
+    <div className="card" style={{ borderColor: C.blueLight }}>
+      <div className="row between"><div className="h2" style={{ margin: 0 }}>Primeros pasos · {hechos} de {pasos.length}</div>
+        <button className="btn btn-ghost btn-sm" onClick={() => { local.set(clave, 1); setOculto(true); }}>Ocultar</button></div>
+      <div className="bar-bg" style={{ margin: "10px 0" }}><div className="bar-fg" style={{ width: `${hechos / pasos.length * 100}%` }} /></div>
+      {pasos.map(([t, ok, vista], i) => (
+        <div key={i} className="row" style={{ padding: "5px 0", fontSize: 13 }}>
+          <span style={{ width: 22 }}>{ok ? "✅" : "⬜"}</span><span style={{ flex: 1, color: ok ? C.muted : C.text, textDecoration: ok ? "line-through" : "none" }}>{t}</span>
+          {!ok && <button className="btn btn-ghost btn-sm" onClick={() => ir(vista)}>Ir ›</button>}
+        </div>))}
+      {!unidades.length && <div className="row" style={{ marginTop: 8 }}><span className="muted">¿Quieres verlo funcionando antes?</span>
+        <button className="btn btn-ghost btn-sm" onClick={() => { update(s => { s.propiedades.push(...conIdsNuevos({ propiedades: propiedadesEjemplo() }).propiedades); }, "Cargó datos de ejemplo"); toast("Datos de ejemplo cargados: los borras cuando quieras en Configuración"); }}>Cargar datos de ejemplo</button></div>}
+      {st.propiedades.some(esEjemplo) && <div className="row" style={{ marginTop: 8 }}><span className="muted">Estás viendo datos de ejemplo.</span>
+        <button className="btn btn-ghost btn-sm" onClick={() => borrarEjemplo(st, update, toast)}>Borrarlos</button></div>}
+    </div>
+  );
+}
+
 function PanelView() {
   const { st, hoy, uf, user, abrirFicha, ir } = useApp();
   const fin = useMemo(() => resumenFinanciero(st, hoy, uf), [st, hoy, uf]);
@@ -1446,7 +1539,7 @@ function PanelView() {
   const filtroFn = useCallback(pt => filtro === "todas" || (filtro === "libres" ? pt.cp.libres > 0 : pt.cp.ocupadas > 0), [filtro]);
   const puntos = usePuntos(st.propiedades, filtroFn, filtro === "libres");
   const esAdm = esAdminEmp(user);
-  const pct = fin.esperado ? Math.min(100, fin.cobrado / fin.esperado * 100) : 0;
+  const pct = fin.esperado ? Math.min(100, fin.rentasCobradas / fin.esperado * 100) : 0;
   const libres = listarUnidades(st).filter(x => !x.u.contrato);
 
   return (
@@ -1459,13 +1552,15 @@ function PanelView() {
         <span className="live"><span className="dot" />En vivo</span>
       </div>
 
+      <PrimerosPasos />
+
       {esAdm && (
         <div className="card" style={{ background: `linear-gradient(135deg, ${C.sidebar}, ${C.blue})`, color: "#fff", border: "none" }}>
           <div className="row between">
             <div>
               <div style={{ fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", opacity: .7, fontWeight: 600 }}>Ingresos de {MESES[hoy.getMonth()]} · tiempo real</div>
               <div style={{ fontSize: 34, fontWeight: 700, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>{fmtCLP(fin.cobrado)}</div>
-              <div style={{ opacity: .75, fontSize: 12.5 }}>de {fmtCLP(fin.esperado)} esperados · {Math.round(pct)}% recaudado</div>
+              <div style={{ opacity: .75, fontSize: 12.5 }}>Rentas del mes: {fmtCLP(fin.rentasCobradas)} cobradas + {fmtCLP(fin.porCobrar)} por cobrar = {fmtCLP(fin.esperado)} · {Math.round(pct)}% recaudado</div>
             </div>
             <div style={{ textAlign: "right" }}>
               <div style={{ opacity: .7, fontSize: 11 }}>UF hoy</div>
@@ -1639,8 +1734,8 @@ const contratoVacio = () => ({
   id: uid(), arrendatario: { nombre: "", rut: "", email: "", telefono: "", giro: "", domicilio: "", representante: "" },
   inicio: toISO(new Date()), termino: toISO(new Date(new Date().getFullYear() + 1, new Date().getMonth(), new Date().getDate() - 1)),
   diaPago: 5, moneda: "UF", valor: "", iva: false, reajuste: null, garantia: "",
-  multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0 },
-  pagos: [], multasCondonadas: {},
+  multa: { cobrar: false, tipo: "diaria", monto: 0.1, diasGracia: 3, tope: 0, desdeGracia: true },
+  pagos: [], multasCondonadas: {}, alDiaHasta: "",
 });
 const unidadVacia = (categoria = "casa", nombre = "Unidad principal") => ({ id: uid(), nombre, categoria, m2: "", dormitorios: "", banos: "", estacionamientos: "", descripcion: "", precioUF: "", fotos: [], servicios: {}, inventario: [], contrato: null, publicar: true, operacion: "arriendo", precioVentaUF: "" });
 
@@ -1761,13 +1856,24 @@ function ServiciosFicha({ servicios }) {
 }
 
 function UnidadEditor({ value: u, onChange, esLocal }) {
-  const { user } = useApp();
+  const { user, uf } = useApp();
   const upd = (k, v) => onChange({ ...u, [k]: v });
   const c = u.contrato;
-  const updC = (k, v) => onChange({ ...u, contrato: { ...c, [k]: v } });
+  const updC = (k, v) => {
+    const n = { ...c, [k]: v };
+    // al cambiar la moneda, los montos de la multa (no los %) se convierten a la UF de hoy
+    if (k === "moneda" && v !== c.moneda && c.multa && uf) {
+      const conv = x => x === "" || x == null ? x : v === "CLP" ? Math.round(Number(x) * uf) : Math.round(Number(x) / uf * 100) / 100;
+      n.multa = { ...c.multa, monto: c.multa.tipo.includes("pct") ? c.multa.monto : conv(c.multa.monto), tope: conv(c.multa.tope) };
+    }
+    // al cambiar el inicio, si el término era el sugerido (un año), se recalcula; si lo escribiste tú, no se toca
+    const terminoSugerido = iso => { const d = parseISO(iso); return d ? toISO(new Date(d.getFullYear() + 1, d.getMonth(), d.getDate() - 1)) : ""; };
+    if (k === "inicio" && v && (!c.termino || c.termino === terminoSugerido(c.inicio))) n.termino = terminoSugerido(v);
+    onChange({ ...u, contrato: n });
+  };
   const updA = (k, v) => updC("arrendatario", { ...c.arrendatario, [k]: v });
   const updM = (k, v) => updC("multa", { ...c.multa, [k]: v });
-  const esAdm = esAdminEmp(user);
+  const esAdm = esAdminEmp(user) && !user.soloLectura;
   const unidadMoneda = c && c.moneda === "CLP" ? "$" : "UF";
 
   return (
@@ -1781,7 +1887,7 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
           </select>
         </Campo>
         <Campo label="Superficie (m²)"><input className="input" type="number" value={u.m2} onChange={e => upd("m2", e.target.value)} /></Campo>
-        {!esLocal && <Campo label="Dormitorios"><input className="input" type="number" value={u.dormitorios} onChange={e => upd("dormitorios", e.target.value)} /></Campo>}
+        {(!esLocal || ["depto", "casa"].includes(u.categoria)) && <Campo label="Dormitorios"><input className="input" type="number" value={u.dormitorios} onChange={e => upd("dormitorios", e.target.value)} /></Campo>}
         <Campo label="Baños"><input className="input" type="number" value={u.banos} onChange={e => upd("banos", e.target.value)} /></Campo>
         <Campo label="Estacionamientos"><input className="input" type="number" value={u.estacionamientos} onChange={e => upd("estacionamientos", e.target.value)} /></Campo>
         <Campo label="Se ofrece en">
@@ -1802,7 +1908,7 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
       <div className="section-title row between">
         <span>Arriendo</span>
         <label className="switch" style={{ textTransform: "none", letterSpacing: 0, color: C.text, fontWeight: 500 }}>
-          <input type="checkbox" checked={!!c} onChange={e => {
+          <input type="checkbox" checked={!!c} disabled={!!c && !esAdm && (c.pagos || []).length > 0} title={!!c && !esAdm ? "Para dejar la propiedad libre, un administrador usa Terminar contrato en la ficha" : ""} onChange={e => {
             if (e.target.checked) return upd("contrato", contratoVacio());
             const n = (c.pagos || []).length;
             if (n && !confirm(`Se borrará este contrato y sus ${n} pagos registrados. Para dejar la propiedad libre conservando el historial, usa "Terminar contrato" en la ficha. ¿Borrar de todas formas?`)) return;
@@ -1828,6 +1934,8 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
           <div className="form-grid">
             <Campo label="Inicio"><input className="input" type="date" value={c.inicio} onChange={e => updC("inicio", e.target.value)} /></Campo>
             <Campo label="Término"><input className="input" type="date" value={c.termino} onChange={e => updC("termino", e.target.value)} /></Campo>
+            {c.inicio && c.inicio.slice(0, 7) < periodoDe(new Date()) && !(c.pagos || []).length &&
+              <Campo label="Al día hasta (mes)"><input className="input" type="month" value={c.alDiaHasta || ""} max={periodoDe(new Date())} onChange={e => updC("alDiaHasta", e.target.value)} /></Campo>}
             <Campo label="Día de pago (1-31)"><input className="input" type="number" min="1" max="31" value={c.diaPago} onChange={e => updC("diaPago", Math.max(1, Math.min(31, Number(e.target.value) || 1)))} /></Campo>
             <Campo label="Moneda">
               <select className="select" value={c.moneda} onChange={e => updC("moneda", e.target.value)}>
@@ -1869,6 +1977,8 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
               </label>
             </div>
             <div className="muted" style={{ margin: "4px 0 10px" }}>Según lo acordado en el contrato. Al vencer la fecha (más los días de gracia) la multa se suma sola a la deuda. {!esAdm && "Solo un administrador puede activarla o desactivarla."}</div>
+            {c.moneda === "CLP" && c.multa.cobrar && !c.multa.tipo.includes("pct") && Number(c.multa.monto) > 0 && Number(c.multa.monto) < 100 &&
+              <div style={{ color: "#B91C1C", fontSize: 12.5, marginBottom: 8 }}>⚠️ El monto de la multa está en pesos: ${c.multa.monto} parece un error (¿era en UF?).</div>}
             <div className="form-grid">
               <Campo label="Tipo de multa">
                 <select className="select" value={c.multa.tipo} onChange={e => updM("tipo", e.target.value)}>
@@ -1881,6 +1991,7 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
               <Campo label={c.multa.tipo.includes("pct") ? "Porcentaje (%)" : `Monto (${unidadMoneda})`}><input className="input" type="number" step="0.01" value={c.multa.monto} onChange={e => updM("monto", e.target.value)} /></Campo>
               <Campo label="Días de gracia"><input className="input" type="number" min="0" value={c.multa.diasGracia} onChange={e => updM("diasGracia", e.target.value)} /></Campo>
               <Campo label={`Tope por mes (${unidadMoneda}, 0 = sin tope)`}><input className="input" type="number" step="0.01" value={c.multa.tope} onChange={e => updM("tope", e.target.value)} /></Campo>
+              {c.multa.tipo.startsWith("diaria") && <Campo label="Días que se cobran" span><label className="switch" style={{ marginTop: 6 }}><input type="checkbox" checked={!!c.multa.desdeGracia} onChange={e => updM("desdeGracia", e.target.checked)} disabled={!esAdm} />Solo los días posteriores a la gracia (si no, todos los días desde el vencimiento)</label></Campo>}
             </div>
           </div>
         </>
@@ -2169,6 +2280,30 @@ function ComunicarModal({ p, u, onClose, inicial }) {
 }
 
 
+// Recibo de pago o abono para el arrendatario
+function htmlRecibo(st, p, u, c, pg) {
+  const h = esc, e = st.empresa, a = c.arrendatario || {}, arr = arrendadorDe(st, p);
+  const total = (pg.montoCLP || 0) + (pg.multaCLP || 0);
+  const num = String(pg.id || "").replace(/-/g, "").slice(0, 8).toUpperCase();
+  return `<h2>Recibo de ${pg.esAbono ? "abono" : "pago"} de arriendo</h2>
+<p style="text-align:center">N° ${num} · ${fmtFechaLarga(parseISO(pg.fecha))}</p>
+<table>
+<tr><td>Recibido de</td><td><b>${h(a.nombre)}</b>${a.rut ? ` · RUT ${h(a.rut)}` : ""}</td></tr>
+<tr><td>Inmueble</td><td>${h(nombreUnidad(p, u))}${p.direccion ? ` · ${h(p.direccion)}${p.comuna ? ", " + h(p.comuna) : ""}` : ""}</td></tr>
+<tr><td>Concepto</td><td>${pg.esAbono ? "Abono a la" : ""} Renta de ${h(nombrePeriodo(pg.periodo))}</td></tr>
+<tr><td>Monto renta</td><td>${fmtCLP(pg.montoCLP)}${pg.ivaCLP ? ` (incluye IVA ${fmtCLP(pg.ivaCLP)})` : ""}${pg.ufDia ? ` · UF del día ${fmtCLP(pg.ufDia)}` : ""}</td></tr>
+${pg.multaCLP ? `<tr><td>Multa por atraso</td><td>${fmtCLP(pg.multaCLP)}</td></tr>` : ""}
+<tr><td><b>Total recibido</b></td><td><b>${fmtCLP(total)}</b></td></tr>
+<tr><td>Medio de pago</td><td>${h(pg.metodo || "—")}</td></tr>
+${pg.obs ? `<tr><td>Observación</td><td>${h(pg.obs)}</td></tr>` : ""}
+<tr><td>Arrendador</td><td>${h(arr.nombre || e.nombre)}${arr.rut ? ` · RUT ${h(arr.rut)}` : ""}</td></tr>
+${arr.nombre && arr.nombre !== e.nombre ? `<tr><td>Administra</td><td>${h(e.nombre)}${e.rut ? ` · RUT ${h(e.rut)}` : ""}</td></tr>` : ""}
+<tr><td>Registró</td><td>${h(pg.registradoPor || "")}</td></tr>
+</table>
+<p style="margin-top:40px;text-align:center">______________________________<br/>${h(e.nombre)}</p>
+<p style="font-size:11px;color:#777;text-align:center">Este recibo no reemplaza la boleta o factura que corresponda.</p>`;
+}
+
 // ─── COMPARTIR CON INTERESADO ─────────────────────────────────────────────────
 function CompartirModal({ p, u, onClose }) {
   const { uf, update, toast, user } = useApp();
@@ -2176,7 +2311,13 @@ function CompartirModal({ p, u, onClose }) {
   const texto = `Hola${i.nombre ? " " + i.nombre.split(" ")[0] : ""}, te comparto la información de la propiedad:\n\n${textoFichaDisponible(p, u, uf)}\n\nQuedo atento/a para coordinar una visita.`;
   const registrar = canalTxt => {
     if (!i.nombre && !i.telefono && !i.email) return;
-    update(s => { s.interesados.unshift({ id: uid(), ...i, propId: p.id, unidadId: u.id, fecha: toISO(new Date()), canal: canalTxt, por: user.nombre }); }, `Envió ficha de "${nombreUnidad(p, u)}" a interesado ${i.nombre || i.telefono || i.email} por ${canalTxt}`);
+    // misma persona (teléfono o correo) en la misma unidad: se actualiza en vez de duplicarla
+    const tel = telWA(i.telefono), mail = (i.email || "").trim().toLowerCase();
+    update(s => {
+      const ya = s.interesados.find(x => x.unidadId === u.id && ((tel && telWA(x.telefono) === tel) || (mail && (x.email || "").trim().toLowerCase() === mail)));
+      if (ya) Object.assign(ya, { nombre: i.nombre || ya.nombre, telefono: i.telefono || ya.telefono, email: i.email || ya.email, nota: [ya.nota, i.nota].filter(Boolean).join(" · ").slice(0, 500), canal: canalTxt });
+      else s.interesados.unshift({ id: uid(), ...i, propId: p.id, unidadId: u.id, fecha: toISO(new Date()), canal: canalTxt, por: user.nombre });
+    }, `Envió ficha de "${nombreUnidad(p, u)}" a interesado ${i.nombre || i.telefono || i.email} por ${canalTxt}`);
   };
   const compartirFotos = async () => {
     try {
@@ -2222,6 +2363,7 @@ function CompartirModal({ p, u, onClose }) {
 const pctTxt = v => `${Number(v).toLocaleString("es-CL", { maximumFractionDigits: 4 })}%`;
 function detalleIndice(r) {
   const d = r.detalle || {};
+  if (d.anexo) return `${d.documento || "Anexo"} (${r.variacionPct >= 0 ? "+" : ""}${pctTxt(r.variacionPct)})`;
   if (r.tipo === "pct") return `${pctTxt(r.variacionPct)} fijo pactado`;
   if (r.tipo === "ipc") return `IPC acumulado ${pctTxt(r.variacionPct)}: ` + (d.meses || []).map(m => `${nombrePeriodo(m.periodo).slice(0, 3).toLowerCase()} ${m.periodo.slice(2, 4)} ${String(m.ipc).replace(".", ",")}%`).join(" · ") + (d.completo === false ? " (últimos meses publicados)" : "");
   return `UF ${fmtFecha(d.ufInicio?.fecha)} ${fmtCLP(d.ufInicio?.valor)} → ${fmtFecha(d.ufFin?.fecha)} ${fmtCLP(d.ufFin?.valor)} (${pctTxt(r.variacionPct)})`;
@@ -2231,10 +2373,29 @@ function ReajusteFicha({ p, u, c }) {
   const [calc, setCalc] = useState(null);
   const [cargando, setCargando] = useState(false);
   useEffect(() => { setCalc(null); }, [c.id]);
-  if (!reajusteActivo(c)) return <div className="muted" style={{ marginTop: 10 }}>Sin reajuste pactado.{puede(user, "editar") ? " Puedes configurarlo (IPC, UF o % fijo) al editar el contrato." : ""}</div>;
+  const contratoDe = s => s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
   const actual = periodoDe(hoy), tipo = tipoReajuste(c);
+  const hist = reajusteActivo(c) ? historialReajustes(c, actual) : aplicados(c);
+  // se puede deshacer el último reajuste o anexo registrado (no los pasos automáticos del % fijo)
+  const ultimo = [...hist].reverse().find(r => !(r.detalle && r.detalle.automatico)) || null;
+  const deshacer = () => {
+    if (!confirm(`¿Deshacer el cambio de renta de ${nombrePeriodo(ultimo.desde)}? La renta vuelve a ${fmtMonto(ultimo.valorAnterior, c.moneda)}.`)) return;
+    update(s => { const cc = contratoDe(s); cc.reajustes = (cc.reajustes || []).filter(x => x.id !== ultimo.id); },
+      `Deshizo el cambio de renta de ${nombrePeriodo(ultimo.desde)} en "${nombreUnidad(p, u)}"`);
+  };
+  const historial = hist.length > 0 && (
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
+      <div className="label" style={{ marginBottom: 4 }}>Historial de cambios de renta</div>
+      {hist.slice().reverse().map(r => (
+        <div key={r.id} style={{ fontSize: 12, padding: "3px 0" }}>
+          <b>{nombrePeriodo(r.desde)}</b>: {fmtMonto(r.valorAnterior, c.moneda)} → {fmtMonto(r.valorNuevo, c.moneda)} <span className="muted">· {detalleIndice(r)}{r.registradoPor ? ` · aplicó ${r.registradoPor}${r.creado ? " el " + fmtFecha(r.creado.slice(0, 10)) : ""}` : ""}</span>
+          {ultimo && r.id === ultimo.id && esAdminEmp(user) && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6, padding: "1px 8px" }} onClick={deshacer}>Deshacer</button>}
+        </div>
+      ))}
+    </div>
+  );
+  if (!reajusteActivo(c)) return <div className="muted" style={{ marginTop: 10 }}>Sin reajuste pactado.{puede(user, "editar") ? " Puedes configurarlo (IPC, UF o % fijo) al editar el contrato." : ""}{historial}</div>;
   const prox = proximoReajuste(c, actual), pend = reajustePendiente(c, actual), dias = diasParaReajuste(c, hoy);
-  const hist = historialReajustes(c, actual);
   const aviso = !pend && dias != null && dias <= avisoReajuste(c);
   const siguiente = tipo === "pct" ? rentaMes(c, prox) : calc && calc.desde === prox ? calc.valorNuevo : null;
   const calcular = async () => {
@@ -2243,18 +2404,11 @@ function ReajusteFicha({ p, u, c }) {
     catch (e) { toast("No se pudo obtener el índice: " + e.message); }
     finally { setCargando(false); }
   };
-  const contratoDe = s => s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
   const aplicar = () => {
     const r = { id: uid(), ...calc, registradoPor: user.nombre };
     update(s => { const cc = contratoDe(s); cc.reajustes = [...(cc.reajustes || []), r]; },
       `Aplicó reajuste ${TIPOS_REAJUSTE[tipo]} (${pctTxt(r.variacionPct)}) en "${nombreUnidad(p, u)}": ${fmtMonto(r.valorAnterior, c.moneda)} → ${fmtMonto(r.valorNuevo, c.moneda)} desde ${nombrePeriodo(r.desde)}`);
     setCalc(null); toast("Reajuste aplicado: los cobros desde " + nombrePeriodo(r.desde) + " salen con la renta nueva");
-  };
-  const ultimo = tipo !== "pct" ? hist[hist.length - 1] : null;
-  const deshacer = () => {
-    if (!confirm(`¿Deshacer el reajuste de ${nombrePeriodo(ultimo.desde)}? La renta vuelve a ${fmtMonto(ultimo.valorAnterior, c.moneda)}.`)) return;
-    update(s => { const cc = contratoDe(s); cc.reajustes = (cc.reajustes || []).filter(x => x.id !== ultimo.id); },
-      `Deshizo el reajuste de ${nombrePeriodo(ultimo.desde)} en "${nombreUnidad(p, u)}"`);
   };
   return (
     <div className="card" style={{ marginTop: 10, padding: 12, background: pend ? C.warningBg : aviso ? C.infoBg : C.bg }}>
@@ -2276,17 +2430,7 @@ function ReajusteFicha({ p, u, c }) {
           </div>
         )}
       </div>
-      {hist.length > 0 && (
-        <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>
-          <div className="label" style={{ marginBottom: 4 }}>Historial de reajustes</div>
-          {hist.slice().reverse().map(r => (
-            <div key={r.id} style={{ fontSize: 12, padding: "3px 0" }}>
-              <b>{nombrePeriodo(r.desde)}</b>: {fmtMonto(r.valorAnterior, c.moneda)} → {fmtMonto(r.valorNuevo, c.moneda)} <span className="muted">· {detalleIndice(r)}{r.registradoPor ? ` · aplicó ${r.registradoPor}${r.creado ? " el " + fmtFecha(r.creado.slice(0, 10)) : ""}` : ""}</span>
-              {ultimo && r.id === ultimo.id && esAdminEmp(user) && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6, padding: "1px 8px" }} onClick={deshacer}>Deshacer</button>}
-            </div>
-          ))}
-        </div>
-      )}
+      {historial}
     </div>
   );
 }
@@ -2297,15 +2441,18 @@ function FichaDrawer({ propId, unidadId, onClose }) {
   const [tab, setTab] = useState("resumen");
   const [modal, setModal] = useState(null);
   useEffect(() => { setTab("resumen"); }, [unidadId]);
-  useEffect(() => { const f = e => e.key === "Escape" && !document.querySelector(".overlay") && onClose(); window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f); }, [onClose]);
+  useEffect(() => { const f = e => e.key === "Escape" && !e.defaultPrevented && !document.querySelector(".overlay") && onClose(); window.addEventListener("keydown", f); return () => window.removeEventListener("keydown", f); }, [onClose]);
   if (!p) return null;
   const esCentro = p.tipo === "centro";
   const u = esCentro ? p.unidades.find(x => x.id === unidadId) : p.unidades[0];
   const cp = calcPropiedad(p, hoy, uf);
-  const esAdm = esAdminEmp(user);
+  const esAdm = esAdminEmp(user) && !user.soloLectura;
 
   const eliminar = () => {
-    if (!confirm(`¿Eliminar "${p.nombre}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
+    const n = p.unidades.length, pagos = p.unidades.reduce((t, x) => t + [...(x.historial || []), ...(x.contrato ? [x.contrato] : [])].reduce((s, c) => s + (c.pagos || []).length, 0), 0);
+    if (!confirm(`¿Eliminar "${p.nombre}" y todos sus datos (${n} unidad${n > 1 ? "es" : ""}, ${pagos} pagos registrados, contratos, fotos y documentos)? Esta acción no se puede deshacer.`)) return;
+    // propiedades con varias unidades o con pagos: se confirma escribiendo el nombre
+    if ((n > 1 || pagos > 0) && (prompt(`Para confirmar, escribe el nombre de la propiedad: ${p.nombre}`) || "").trim().toLowerCase() !== p.nombre.trim().toLowerCase()) return toast("El nombre no coincide: no se eliminó.");
     update(s => { s.propiedades = s.propiedades.filter(x => x.id !== p.id); }, `Eliminó la propiedad "${p.nombre}"`);
     onClose();
   };
@@ -2339,7 +2486,7 @@ function FichaDrawer({ propId, unidadId, onClose }) {
       {modal && modal.t === "pago" && <PagoModal p={p} u={u} modoInicial={modal.modo || "pago"} onClose={() => setModal(null)} />}
       {modal && modal.t === "comunicar" && <ComunicarModal p={p} u={u} inicial={modal.plantilla} onClose={() => setModal(null)} />}
       {modal && modal.t === "compartir" && <CompartirModal p={p} u={u} onClose={() => setModal(null)} />}
-      {modal && modal.t === "doc" && <DocumentoModal p={p} u={u} tipoInicial={modal.tipo} onClose={() => setModal(null)} />}
+      {modal && modal.t === "doc" && <DocumentoModal p={p} u={u} tipoInicial={modal.tipo} doc={modal.doc} onClose={() => setModal(null)} />}
     </>
   );
 }
@@ -2385,7 +2532,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
   const r = calcUnidad(u, hoy, uf);
   const c = u.contrato;
   const a = c?.arrendatario || {};
-  const esAdm = esAdminEmp(user);
+  const esAdm = esAdminEmp(user) && !user.soloLectura;
   const arr = arrendadorDe(st, p);
   const docs = st.documentos.filter(d => d.unidadId === u.id);
   const interes = st.interesados.filter(x => x.unidadId === u.id);
@@ -2546,7 +2693,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
             </div>}
             {!(c.pagos || []).length && !(c.abonos || []).length ? <div className="empty">Sin pagos registrados.</div> : (
               <div className="table-wrap"><table>
-                <thead><tr><th>Mes</th><th>Tipo</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th>{esAdm && <th></th>}</tr></thead>
+                <thead><tr><th>Mes</th><th>Tipo</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th><th></th>{esAdm && <th></th>}</tr></thead>
                 <tbody>{[...(c.pagos || []), ...(c.abonos || []).map(a => ({ ...a, esAbono: true }))]
                   .sort((x, y) => y.periodo.localeCompare(x.periodo) || (y.fecha || "").localeCompare(x.fecha || "")).map(pg => (
                   <tr key={pg.id} title={`Registró: ${pg.registradoPor}${pg.obs ? " · " + pg.obs : ""}`}>
@@ -2554,6 +2701,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                     <td>{pg.esAbono ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>Abono</span> : "Pago"}</td>
                     <td>{fmtFecha(pg.fecha)}</td>
                     <td className="num">{fmtCLP(pg.montoCLP)}</td><td className="num">{pg.multaCLP ? fmtCLP(pg.multaCLP) : "—"}</td><td>{pg.metodo}</td>
+                    <td><button className="btn btn-ghost btn-sm" onClick={() => imprimirHTML(`Recibo ${nombreUnidad(p, u)} ${nombrePeriodo(pg.periodo)}`, htmlRecibo(st, p, u, c, pg))}>🧾 Recibo</button></td>
                     {esAdm && <td><button className="icon-btn" style={{ fontSize: 13 }} onClick={() => borrarPago(pg)}>🗑</button></td>}
                   </tr>))}
                 </tbody></table></div>
@@ -2678,18 +2826,45 @@ function InventarioTab({ p, u, setModal }) {
 
 
 // ─── DOCUMENTOS ───────────────────────────────────────────────────────────────
-function DocumentoModal({ p, u, tipoInicial, onClose }) {
+function DocumentoModal({ p, u, tipoInicial, doc, onClose }) {
   const { st, hoy, uf, update, user, toast } = useApp();
-  const [tipo, setTipo] = useState(tipoInicial || (u.contrato ? "anexo_renta" : "contrato_hab"));
+  const [tipo, setTipo] = useState(doc ? doc.tipo : tipoInicial || (u.contrato ? "anexo_renta" : "contrato_hab"));
   const [extra, setExtra] = useState({ nuevoValor: "", desde: toISO(hoy), nuevoTermino: "", texto: "", fechaTermino: toISO(hoy) });
   const [version, setVersion] = useState(0);
+  // documento guardado: se abre con su texto editado; al cambiar el tipo o "Restablecer" se vuelve a la plantilla
+  const [guardado, setGuardado] = useState(doc ? doc.html : null);
   const ref = useRef(null);
-  const html = useMemo(() => generarDocumento(tipo, { st, p, u, extra, hoy, uf }), [tipo, extra, version]);
+  const html = useMemo(() => guardado ?? generarDocumento(tipo, { st, p, u, extra, hoy, uf }), [tipo, extra, version, guardado]);
   useEffect(() => { if (ref.current) ref.current.innerHTML = limpiarHTML(html); }, [html]);
-  const titulo = `${TIPOS_DOC[tipo]} - ${nombreUnidad(p, u)}`;
+  const titulo = doc && guardado != null ? doc.titulo : `${TIPOS_DOC[tipo]} - ${nombreUnidad(p, u)}`;
   const actual = () => limpiarHTML(ref.current ? ref.current.innerHTML : html);
+  const c = u.contrato;
+  const e = st.empresa;
+  const faltanEmpresa = ["contrato_hab", "contrato_com", "anexo_renta", "anexo_prorroga", "anexo_libre", "termino"].includes(tipo)
+    ? [["rut", "RUT"], ["direccion", "domicilio"], ["representante", "representante legal"]].filter(([k]) => !e[k]).map(([, l]) => l) : [];
+  const blancos = (html.match(/_{3,}/g) || []).length;
+  // Anexo de renta o prórroga: además del documento, se puede aplicar al contrato
+  const aplicable = !doc && c && ((tipo === "anexo_renta" && Number(extra.nuevoValor) > 0 && extra.desde) || (tipo === "anexo_prorroga" && extra.nuevoTermino));
+  const aplicarAlContrato = () => update(s => {
+    const cc = s.propiedades.find(x => x.id === p.id).unidades.find(x => x.id === u.id).contrato;
+    if (tipo === "anexo_prorroga") cc.termino = extra.nuevoTermino;
+    const nuevo = Number(String(extra.nuevoValor).replace(",", "."));
+    if (nuevo > 0) {
+      const desde = tipo === "anexo_renta" ? extra.desde.slice(0, 7) : sumarMes(periodoDe(parseISO(c.termino || extra.nuevoTermino)), 1);
+      const ant = rentaMes(cc, sumarMes(desde, -1));
+      cc.reajustes = [...(cc.reajustes || []).filter(r => r.desde !== desde), { id: uid(), desde, tipo: "pct", variacionPct: ant ? Math.round((nuevo / ant - 1) * 1000000) / 10000 : 0,
+        detalle: { anexo: true, documento: TIPOS_DOC[tipo] }, valorAnterior: ant, valorNuevo: nuevo, registradoPor: user.nombre }];
+    }
+  }, `Aplicó al contrato de "${nombreUnidad(p, u)}" el ${TIPOS_DOC[tipo].toLowerCase()}${extra.nuevoValor ? `: renta ${extra.nuevoValor} ${c.moneda}` : ""}${tipo === "anexo_prorroga" ? `, término ${fmtFecha(extra.nuevoTermino)}` : ""}`);
   const guardar = () => {
+    if (doc && guardado != null) {
+      update(s => { const d = s.documentos.find(x => x.id === doc.id); if (d) d.html = actual(); }, `Editó "${doc.titulo}"`);
+      toast("Documento actualizado"); return;
+    }
     update(s => { s.documentos.unshift({ id: uid(), propId: p.id, unidadId: u.id, tipo, titulo, fecha: toISO(new Date()), autor: user.nombre, html: actual() }); }, `Generó "${titulo}"`);
+    if (aplicable && confirm(tipo === "anexo_renta"
+      ? `¿Aplicar también la nueva renta (${extra.nuevoValor} ${c.moneda}) al contrato desde ${nombrePeriodo(extra.desde.slice(0, 7)).toLowerCase()}? Los cobros desde ese mes saldrán con la renta nueva.`
+      : `¿Aplicar también el nuevo término (${fmtFecha(extra.nuevoTermino)})${extra.nuevoValor ? " y la nueva renta" : ""} al contrato?`)) { aplicarAlContrato(); toast("Documento guardado y aplicado al contrato"); return; }
     toast("Documento guardado en la ficha");
   };
   const necesitaContrato = !u.contrato && !["contrato_hab", "contrato_com", "inventario"].includes(tipo);
@@ -2702,7 +2877,7 @@ function DocumentoModal({ p, u, tipoInicial, onClose }) {
       </>}>
       <div className="form-grid">
         <Campo label="Documento">
-          <select className="select" value={tipo} onChange={e => setTipo(e.target.value)}>
+          <select className="select" value={tipo} onChange={e => { setGuardado(null); setTipo(e.target.value); }}>
             {Object.entries(TIPOS_DOC).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
           </select>
         </Campo>
@@ -2713,9 +2888,12 @@ function DocumentoModal({ p, u, tipoInicial, onClose }) {
         {(tipo === "anexo_libre" || tipo === "entrega") && <Campo label={tipo === "entrega" ? "Estado del inmueble" : "Modificación acordada"} span><textarea className="input" rows={2} value={extra.texto} onChange={e => setExtra({ ...extra, texto: e.target.value })} /></Campo>}
       </div>
       {necesitaContrato && <div className="card" style={{ marginTop: 12, background: C.warningBg, padding: 12, fontSize: 12.5 }}>Esta unidad no tiene contrato registrado: los datos del arrendatario saldrán en blanco.</div>}
+      {faltanEmpresa.length > 0 && guardado == null && <div className="card" style={{ marginTop: 12, background: C.warningBg, padding: 12, fontSize: 12.5 }}>Faltan datos de la empresa ({faltanEmpresa.join(", ")}): complétalos en Configuración → Datos de la empresa para que el documento no salga con espacios en blanco.</div>}
+      {blancos > 0 && <div className="muted" style={{ marginTop: 8 }}>Este documento tiene {blancos} espacio{blancos > 1 ? "s" : ""} por completar (___): puedes escribir encima antes de imprimir.</div>}
+      {doc && guardado != null && <div className="muted" style={{ marginTop: 8 }}>Estás viendo el documento guardado el {fmtFecha(doc.fecha)}. Los cambios se guardan sobre el mismo documento.</div>}
       <div className="row between" style={{ margin: "14px 0 8px" }}>
         <span className="muted">Puedes editar el texto directamente antes de imprimir o guardar.</span>
-        <button className="btn btn-ghost btn-sm" onClick={() => setVersion(v => v + 1)}>Restablecer texto</button>
+        <button className="btn btn-ghost btn-sm" onClick={() => { setGuardado(null); setVersion(v => v + 1); }}>{doc && guardado != null ? "Generar de nuevo desde la plantilla" : "Restablecer texto"}</button>
       </div>
       <div ref={ref} className="doc-editor" contentEditable suppressContentEditableWarning />
       <div className="muted" style={{ marginTop: 8 }}>⚖️ Borrador de referencia: revísalo con un abogado antes de firmar.</div>
@@ -2789,19 +2967,19 @@ function CobranzaView() {
         ))}
       </div>
       {!filas.length ? <div className="card empty">Nada que mostrar.</div> : (
-        <div className="table-wrap"><table>
+        <div className="table-wrap"><table className="tabla-cards">
           <thead><tr><th>Unidad</th><th>Arrendatario</th><th>Vence</th><th>Estado</th><th className="num">Renta</th><th className="num">Multa</th><th className="num">Deuda</th><th></th></tr></thead>
           <tbody>{filas.map(({ p, u, r }) => {
             const c = u.contrato;
             return (
               <tr key={u.id} className="click" onClick={() => abrirFicha(p.id, u.id)}>
                 <td style={{ fontWeight: 600 }}>{nombreUnidad(p, u)}</td>
-                <td>{c.arrendatario.nombre}</td>
-                <td>{r.deudas.length ? fmtFecha(r.deudas[0].venc) : r.proxVenc ? fmtFecha(r.proxVenc) : "—"}</td>
-                <td><Badge estado={r.estado}>{r.estado === "atrasado" ? `Atrasado ${r.deudas[0].dias}d` : null}</Badge></td>
-                <td className="num">{fmtRenta(c)}{r.abonosPendCLP > 0 && <div style={{ fontSize: 11.5, color: C.success, fontWeight: 500 }}>abonado {fmtCLP(r.abonosPendCLP)} · falta {fmtCLP(r.faltaAbonadosCLP)}</div>}</td>
-                <td className="num">{c.multa?.cobrar ? (r.multa ? fmtMonto(r.multa, c.moneda) : "$0") : <span className="muted">no cobra</span>}</td>
-                <td className="num" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}</td>
+                <td data-l="Arrendatario">{c.arrendatario.nombre}</td>
+                <td data-l="Vence">{r.deudas.length ? fmtFecha(r.deudas[0].venc) : r.proxVenc ? fmtFecha(r.proxVenc) : "—"}</td>
+                <td data-l="Estado"><Badge estado={r.estado}>{r.estado === "atrasado" ? `Atrasado ${r.deudas[0].dias}d` : null}</Badge></td>
+                <td className="num" data-l="Renta">{fmtRenta(c)}{r.abonosPendCLP > 0 && <div style={{ fontSize: 11.5, color: C.success, fontWeight: 500 }}>abonado {fmtCLP(r.abonosPendCLP)} · falta {fmtCLP(r.faltaAbonadosCLP)}</div>}</td>
+                <td className="num" data-l="Multa">{c.multa?.cobrar ? (r.multa ? fmtMonto(r.multa, c.moneda) : "$0") : <span className="muted">no cobra</span>}</td>
+                <td className="num" data-l="Deuda" style={{ color: r.deudaCLP ? "#DC2626" : null, fontWeight: r.deudaCLP ? 700 : 400 }}>{r.deudaCLP ? fmtCLP(r.deudaCLP) : "—"}</td>
                 <td onClick={e => e.stopPropagation()}>
                   <div className="row" style={{ flexWrap: "nowrap" }}>
                     {puede(user, "pagos") && (r.estado === "pagado"
@@ -2822,13 +3000,13 @@ function CobranzaView() {
 
 
 function exportarCobranza(st, hoy, uf, toast) {
-  if (!planPermite(st, "exportar")) { const pl = planCon(st, "exportar"); return toast(`Exportar a Excel está disponible desde el plan ${pl ? pl.nombre : "superior"}.`); }
+  if (!permiteExportar(st, toast)) return;
   const filas = listarUnidades(st).filter(x => x.u.contrato).map(({ p, u }) => {
     const c = u.contrato, r = calcUnidad(u, hoy, uf);
     return [nombreUnidad(p, u), c.arrendatario.nombre, arrendadorDe(st, p).nombre, EST[r.estado].label, r.proxVenc ? fmtFecha(r.proxVenc) : "",
       fmtRenta(c), Math.round(r.canonCLP), Math.round(aCLP(r.multa, c.moneda, uf)), Math.round(r.deudaCLP), r.abonosPendCLP || 0];
   });
-  descargarCSV(`cobranza-${toISO(hoy)}`, [["Unidad", "Arrendatario", "Propietario", "Estado", "Próximo vencimiento", "Renta", "Renta en pesos (UF de hoy)", "Multa", "Deuda", "Abonado"], ...filas]);
+  descargarExcel(`cobranza-${toISO(hoy)}`, [["Unidad", "Arrendatario", "Propietario", "Estado", "Próximo vencimiento", "Renta", "Renta en pesos (UF de hoy)", "Multa", "Deuda", "Abonado"], ...filas]);
 }
 
 
@@ -2846,7 +3024,7 @@ function DisponiblesView() {
         {st.empresa.slug && st.empresa.web && st.empresa.web.activa && <a className="btn btn-ghost" href={urlWeb(st.empresa.slug)} target="_blank" rel="noopener">🌐 Ver página web</a>}
       </div>
       {libres.length > 0 && <MapaBase puntos={puntos} alto={300} onSelect={id => abrirFicha(id)} />}
-      {!libres.length ? <div className="card empty">🎉 Todas las unidades están arrendadas.</div> : (
+      {!libres.length ? <div className="card empty">{listarUnidades(st).length ? "🎉 Todas las unidades están arrendadas." : "Aún no tienes propiedades. Agrégalas en Propiedades y las desocupadas aparecerán aquí."}</div> : (
         <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(260px,1fr))" }}>
           {libres.map(({ p, u }) => (
             <div key={u.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
@@ -2887,13 +3065,29 @@ function DisponiblesView() {
 // ─── BITÁCORA Y CONFIGURACIÓN ─────────────────────────────────────────────────
 function BitacoraView() {
   const { st } = useApp();
+  const [buscar, setBuscar] = useState("");
+  const [quien, setQuien] = useState("");
+  const [mes, setMes] = useState("");
+  const [solo, setSolo] = useState(false);
+  const usuarios = [...new Set(st.bitacora.map(b => b.u))].sort();
+  const meses = [...new Set(st.bitacora.map(b => periodoDe(new Date(b.t))))];
+  const t = buscar.trim().toLowerCase();
+  const filas = st.bitacora.filter(b => (!t || b.a.toLowerCase().includes(t) || (b.u || "").toLowerCase().includes(t)) && (!quien || b.u === quien)
+    && (!mes || periodoDe(new Date(b.t)) === mes) && (!solo || /^(🔒|🛟)/.test(b.a)));
   return (
     <div className="grid fade-up" style={{ gap: 14 }}>
-      <div><div className="h1">Bitácora</div><div className="muted">Registro de lo que hizo cada usuario. Las acciones sensibles (🔒) las registra el servidor y no se pueden borrar.</div></div>
-      {!st.bitacora.length ? <div className="card empty">Sin movimientos.</div> : (
+      <div><div className="h1">Bitácora</div><div className="muted">Registro de lo que hizo cada usuario. Las acciones sensibles (🔒) y los accesos de soporte (🛟) los registra el servidor y no se pueden borrar.</div></div>
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        <input className="input" style={{ maxWidth: 260 }} placeholder="Buscar (propiedad, arrendatario, acción…)" value={buscar} onChange={e => setBuscar(e.target.value)} />
+        <select className="select" style={{ maxWidth: 200 }} value={quien} onChange={e => setQuien(e.target.value)}><option value="">Todos los usuarios</option>{usuarios.map(u => <option key={u} value={u}>{u}</option>)}</select>
+        <select className="select" style={{ maxWidth: 170 }} value={mes} onChange={e => setMes(e.target.value)}><option value="">Todos los meses</option>{meses.map(m => <option key={m} value={m}>{nombrePeriodo(m)}</option>)}</select>
+        <label className="switch"><input type="checkbox" checked={solo} onChange={e => setSolo(e.target.checked)} />Solo sensibles y soporte</label>
+        <span className="muted">{filas.length} de {st.bitacora.length}</span>
+      </div>
+      {!filas.length ? <div className="card empty">{st.bitacora.length ? "Ningún movimiento coincide con el filtro." : "Sin movimientos."}</div> : (
         <div className="table-wrap"><table>
           <thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Acción</th></tr></thead>
-          <tbody>{st.bitacora.map((b, i) => <tr key={i}><td className="mono" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>{new Date(b.t).toLocaleString("es-CL")}</td><td>{b.u}</td><td>{b.a}</td></tr>)}</tbody>
+          <tbody>{filas.slice(0, 500).map((b, i) => <tr key={i}><td className="mono" style={{ fontSize: 11.5, whiteSpace: "nowrap" }}>{new Date(b.t).toLocaleString("es-CL")}</td><td>{b.u}</td><td>{b.a}</td></tr>)}</tbody>
         </table></div>
       )}
     </div>
@@ -2908,7 +3102,8 @@ function SinPlan({ funcion }) {
     <div className="card empty fade-up">
       <div style={{ fontSize: 30 }}>🔒</div>
       <div style={{ fontWeight: 700, marginTop: 6 }}>{FUNCIONES_PLAN[funcion]}</div>
-      <div className="muted" style={{ marginTop: 6 }}>Disponible desde el plan {pl ? `${pl.nombre} (${fmtCLP(pl.precioCLP)} + IVA al mes)` : "superior"}. Tu plan actual es {st.suscripcion ? st.suscripcion.plan : "—"}. Revisa los planes en Configuración o contacta a HM Software para cambiarlo.</div>
+      <div className="muted" style={{ marginTop: 6 }}>Disponible desde el plan {pl ? `${pl.nombre} (${fmtCLP(pl.precioCLP)} + IVA al mes)` : "superior"}. Tu plan actual es {st.suscripcion ? st.suscripcion.plan : "—"}. Revisa los planes en Configuración o escríbenos para cambiarlo.</div>
+      <div style={{ marginTop: 10 }}><ContactoHM motivo={`cambiar de plan (${FUNCIONES_PLAN[funcion]})`} compacto /></div>
     </div>
   );
 }
@@ -3171,8 +3366,8 @@ function LiquidacionesView() {
   });
   const suma = k => filas.reduce((t, f) => t + f.v[k], 0);
   const exportar = () => {
-    if (!planPermite(st, "exportar")) { const pl = planCon(st, "exportar"); return toast(`Exportar a Excel está disponible desde el plan ${pl ? pl.nombre : "superior"}.`); }
-    descargarCSV(`liquidaciones-${periodo}`, [["Propietario", "RUT", "Total recibido", "Comisión", "IVA comisión", "Descuentos", "A pagar", "Estado"],
+    if (!permiteExportar(st, toast)) return;
+    descargarExcel(`liquidaciones-${periodo}`, [["Propietario", "RUT", "Total recibido", "Comisión", "IVA comisión", "Descuentos", "A pagar", "Estado"],
       ...filas.map(({ pr, emitida, v }) => [pr.nombre, pr.rut, v.totalCobrado, v.comision, v.ivaComision, v.totalDescuentos, v.total, emitida ? emitida.estado : "sin emitir"])]);
   };
   const abiertaPr = abierta && st.propietarios.find(x => x.id === abierta);
@@ -3247,6 +3442,7 @@ function LiquidacionModal({ pr, periodo, onClose }) {
       "Liquidación marcada como pagada", `Pagó la liquidación de ${pr.nombre} de ${nombrePeriodo(periodo)} (${fmtCLP(emitida.total)})`);
   };
   const anular = () => {
+    if (emitida.estado === "pagada" && !confirm(`⚠️ Esta liquidación ya figura PAGADA al propietario (${fmtCLP(emitida.total)} el ${fmtFecha(emitida.pagadaEn)}). Anularla no revierte la transferencia. ¿Seguro que quieres anularla?`)) return;
     if (!confirm("¿Anular esta liquidación? Queda registrada como anulada y podrás emitir una nueva.")) return;
     accion(() => q(sb.from("liquidaciones").update({ estado: "anulada" }).eq("id", emitida.id)),
       "Liquidación anulada", `Anuló la liquidación de ${pr.nombre} de ${nombrePeriodo(periodo)}`);
@@ -3309,6 +3505,20 @@ function LiquidacionModal({ pr, periodo, onClose }) {
 
 // Precios en pesos + IVA; pago anual = 10 meses. Los planes se editan en la tabla "planes" (sin tocar código).
 const INCLUIDO_TODOS = "Cobranza, mapa, contratos y anexos, multas, abonos, reajustes, IVA, inventario con fotos y desocupadas";
+// Contacto de HM Software (se configura en el panel de plataforma) para cambiar de plan o pagar
+function ContactoHM({ motivo = "mi suscripción", compacto }) {
+  const { st } = useApp();
+  const c = st.contactoHM || {}, msg = `Hola, escribo por ${motivo} de ${st.empresa.nombre} en Qipo Arriendos.`;
+  if (!c.whatsapp && !c.email && !c.pago_url) return compacto ? null : <span className="muted">Contacta a HM Software.</span>;
+  return (
+    <span className="row" style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}>
+      {c.pago_url && <a className="btn btn-primary btn-sm" href={c.pago_url} target="_blank" rel="noreferrer">💳 Pagar suscripción</a>}
+      {c.whatsapp && <a className="btn btn-wa btn-sm" href={linkWA(c.whatsapp, msg)} target="_blank" rel="noreferrer">WhatsApp HM</a>}
+      {c.email && <a className="btn btn-mail btn-sm" href={linkMail(c.email, `Qipo Arriendos · ${st.empresa.nombre}`, msg)}>Correo HM</a>}
+    </span>
+  );
+}
+
 function PlanesCard() {
   const { st } = useApp();
   const sus = st.suscripcion;
@@ -3337,7 +3547,8 @@ function PlanesCard() {
           </tbody>
         </table></div>
       )}
-      <div className="muted" style={{ marginTop: 8 }}>Prueba gratis de 14 días con todo habilitado. Más de 600 unidades: plan Corporativo a convenir. Para cambiar de plan o pagar la suscripción, contacta a HM Software.</div>
+      <div className="muted" style={{ marginTop: 8 }}>Prueba gratis de 14 días con todo habilitado. Más de 600 unidades: plan Corporativo a convenir. Para cambiar de plan o pagar la suscripción:</div>
+      <div style={{ marginTop: 6 }}><ContactoHM motivo="cambiar o pagar el plan" /></div>
     </div>
   );
 }
@@ -3364,6 +3575,8 @@ function WebCard() {
   const guardar = () => {
     const slug = aSlug(w.slug);
     if (slug.length < 3) return toast("La dirección debe tener al menos 3 letras o números");
+    // sin un teléfono o correo los interesados no tienen cómo escribir (salvo el formulario)
+    if (w.activa && !(w.whatsapp || st.empresa.telefono || w.email || st.empresa.email) && !confirm("La página no tiene WhatsApp ni correo de contacto: los interesados solo podrán usar el formulario. ¿Publicarla de todas formas?")) return;
     const { slug: _, ...web } = w;
     update(s => { s.empresa = { ...s.empresa, slug, web }; }, `${w.activa ? "Publicó" : "Actualizó"} la página web (${slug})`);
     setW(x => ({ ...x, slug }));
@@ -3602,7 +3815,7 @@ function PlataformaPanel({ sesionSb, empresas, onVer, onSalir }) {
           )}
         </>}
 
-        {tab === "planes" && <PlanesAdmin planes={d.planes} editable={puede(["super_admin"])} accion={accion} />}
+        {tab === "planes" && <><ContactoAdmin editable={puede(["super_admin"])} accion={accion} /><PlanesAdmin planes={d.planes} editable={puede(["super_admin"])} accion={accion} /></>}
         {tab === "cobros" && <CobrosAdmin d={d} editable={puede(["super_admin", "contabilidad"])} accion={accion} />}
         {tab === "bitacora" && (
           <div className="card">
@@ -3723,6 +3936,29 @@ function EmpresaAdmin({ e, d, puede, accion, onVer, onClose }) {
         </div>
       )}
     </Modal>
+  );
+}
+
+// Contacto que ven los clientes para pagar o cambiar de plan
+function ContactoAdmin({ editable, accion }) {
+  const [c, setC] = useState(null);
+  useEffect(() => { sb.from("plataforma_config").select("valor").eq("clave", "contacto").maybeSingle().then(r => setC((r.data && r.data.valor) || {})); }, []);
+  if (!c) return null;
+  const guardar = () => {
+    if (c.pago_url && !/^https:\/\//.test(c.pago_url)) return alert("El enlace de pago debe empezar con https://");
+    accion(() => q(sb.from("plataforma_config").upsert({ clave: "contacto", valor: { whatsapp: (c.whatsapp || "").trim(), email: (c.email || "").trim(), pago_url: (c.pago_url || "").trim() } })), "Contacto guardado", "Actualizó el contacto de soporte y pago que ven los clientes");
+  };
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="h2">Contacto que ven los clientes</div>
+      <div className="muted" style={{ marginBottom: 8 }}>Aparece en Planes, en las funciones bloqueadas por plan y en los avisos de prueba vencida, mora o suspensión.</div>
+      <div className="form-grid">
+        <Campo label="WhatsApp"><input className="input" value={c.whatsapp || ""} disabled={!editable} onChange={e => setC({ ...c, whatsapp: e.target.value })} placeholder="+56 9 1234 5678" /></Campo>
+        <Campo label="Correo"><input className="input" value={c.email || ""} disabled={!editable} onChange={e => setC({ ...c, email: e.target.value })} /></Campo>
+        <Campo label="Enlace de pago (opcional)"><input className="input" value={c.pago_url || ""} disabled={!editable} onChange={e => setC({ ...c, pago_url: e.target.value })} placeholder="https://… (Mercado Pago, Flow, Khipu…)" /></Campo>
+      </div>
+      {editable && <button className="btn btn-primary btn-sm" style={{ marginTop: 10 }} onClick={guardar}>Guardar</button>}
+    </div>
   );
 }
 
@@ -3886,9 +4122,14 @@ function ConfigView() {
     setClave({ actual: "", nueva: "", repetir: "" });
   };
   const importar = (d, origen) => {
-    const r = conIdsNuevos(d);
-    if (!r.propiedades.length) return toast("No hay propiedades para importar");
-    if (!confirm(`Se agregarán ${r.propiedades.length} propiedades ${origen}. ¿Continuar?`)) return;
+    // no duplicar: se omiten las propiedades que ya existen (mismo nombre y dirección)
+    const clave = p => `${(p.nombre || "").trim().toLowerCase()}|${(p.direccion || "").trim().toLowerCase()}`;
+    const existentes = new Set(st.propiedades.map(clave));
+    const nuevas = (d.propiedades || []).filter(p => !existentes.has(clave(p)));
+    const omitidas = (d.propiedades || []).length - nuevas.length;
+    const r = conIdsNuevos({ ...d, propiedades: nuevas });
+    if (!r.propiedades.length) return toast(omitidas ? `Las ${omitidas} propiedades del archivo ya existen: no se importó nada.` : "No hay propiedades para importar");
+    if (!confirm(`Se agregarán ${r.propiedades.length} propiedades ${origen}${omitidas ? ` (se omiten ${omitidas} que ya existen)` : ""}. ¿Continuar?`)) return;
     update(s => { s.propiedades.push(...r.propiedades); s.documentos.unshift(...r.documentos); s.interesados.unshift(...r.interesados); }, `Importó ${r.propiedades.length} propiedades ${origen}`);
     toast("Importando…");
   };
@@ -3924,7 +4165,9 @@ function ConfigView() {
       <div className="card">
         <div className="h2">Valor UF</div>
         <div className="row">
-          <div style={{ width: 160 }}><input className="input" type="number" step="0.01" value={st.uf.valor} onChange={e => update(s => { s.uf = { valor: Number(e.target.value) || 0, fecha: toISO(new Date()), auto: false }; })} /></div>
+          <div style={{ width: 160 }}><input className="input" type="number" step="0.01" key={st.uf.valor} defaultValue={st.uf.valor}
+            onBlur={e => { const v = Number(e.target.value); if (!(v > 1000)) { e.target.value = st.uf.valor; return toast("Ingresa un valor de UF válido (por ejemplo 39876,54)"); } if (v !== Number(st.uf.valor)) update(s => { s.uf = { valor: v, fecha: toISO(new Date()), auto: false }; }); }}
+            onKeyDown={e => e.key === "Enter" && e.target.blur()} /></div>
           <span className="muted">Actualizada: {fmtFecha(st.uf.fecha || null)} {st.uf.auto ? "(automática, mindicador.cl)" : "(manual, solo en este equipo)"}</span>
           <button className="btn btn-ghost btn-sm" onClick={recargarUF}>Actualizar desde internet</button>
         </div>
@@ -3950,7 +4193,8 @@ function ConfigView() {
           <button className="btn btn-ghost" onClick={() => archivo.current.click()}>⬆️ Importar respaldo</button>
           <input ref={archivo} type="file" accept="application/json" hidden onChange={leerArchivo} />
           {haylocal && <button className="btn btn-primary" onClick={() => leerDatosDelNavegador().then(d => d && importar(d, "guardadas en este navegador"))}>Importar datos de la versión anterior</button>}
-          {!st.propiedades.length && <button className="btn btn-ghost" onClick={() => importar({ propiedades: datosEjemplo(sinHora(new Date())) }, "de ejemplo")}>Cargar datos de ejemplo</button>}
+          {!st.propiedades.length && <button className="btn btn-ghost" onClick={() => importar({ propiedades: propiedadesEjemplo() }, "de ejemplo")}>Cargar datos de ejemplo</button>}
+          {st.propiedades.some(esEjemplo) && <button className="btn btn-danger" onClick={() => borrarEjemplo(st, update, toast)}>🗑 Borrar datos de ejemplo</button>}
         </div>
       </div>
     </div>
@@ -4071,14 +4315,17 @@ function App() {
     return () => { sb.removeChannel(canalVivo); };
   }, [empresaId]);
 
+  // Suscripción suspendida o cancelada: todo en solo lectura (la base además rechaza cualquier cambio)
+  const soloLectura = !!(st && st.suscripcion && ["suspendida", "cancelada"].includes(st.suscripcion.estado));
   const user = st && uidSesion && (() => {
-    if (soporte) return { id: uidSesion, nombre: `Soporte HM · ${(sesionSb.user.user_metadata || {}).nombre || sesionSb.user.email}`, rol: "super_admin", soporte: true, activo: true, email: sesionSb.user.email };
+    if (soporte) return { id: uidSesion, nombre: `Soporte HM · ${(sesionSb.user.user_metadata || {}).nombre || sesionSb.user.email}`, rol: "super_admin", soporte: true, activo: true, email: sesionSb.user.email, soloLectura };
     const m = st.usuarios.find(u => u.id === uidSesion && u.activo !== false);
-    return m ? { ...m, email: sesionSb.user.email } : null;
+    return m ? { ...m, email: sesionSb.user.email, soloLectura } : null;
   })();
 
   // Cambio optimista: se ve al instante y se guarda en segundo plano, en orden
   const update = useCallback((fn, accion) => {
+    if (soloLectura && accion) { toast("La suscripción está suspendida: puedes ver tus datos, pero no modificarlos."); return; }
     const prev = stRef.current;
     const n = structuredClone(prev);
     fn(n);
@@ -4093,7 +4340,7 @@ function App() {
       })
       .catch(e => { toast("No se guardó: " + mensajeError(e)); recargar(); })
       .finally(() => { pendientes.current--; setGuardando(g => g - 1); });
-  }, [empresaId, uidSesion, user && user.nombre, toast, recargar]);
+  }, [empresaId, uidSesion, user && user.nombre, toast, recargar, soloLectura]);
 
   const recargarUF = useCallback(async () => {
     try { const r = await obtenerUF(); update(s => { s.uf = { valor: r.valor, fecha: r.fecha, auto: true }; }); toast(`UF actualizada: ${fmtCLP(r.valor)}`); }
@@ -4179,13 +4426,19 @@ function App() {
               <button className="btn btn-sm" style={{ background: "#fff" }} onClick={() => { setFicha(null); irPlataforma(true); }}>🛰️ Volver a plataforma</button>
             </div>
           )}
-          {sus && sus.estado !== "activa" && (
-            <div style={{ padding: "8px 24px", fontSize: 12.5, background: bloqueada ? EST.atrasado.bg : sus.estado === "morosa" ? C.warningBg : C.infoBg, color: bloqueada ? "#B91C1C" : sus.estado === "morosa" ? C.warning : C.info, borderBottom: `1px solid ${C.border}` }}>
-              {bloqueada ? "Suscripción suspendida: puedes ver tus datos, pero no modificarlos. Contacta a HM Software para reactivarla."
-                : sus.estado === "morosa" ? "Tu suscripción tiene un pago pendiente. Regulariza para evitar la suspensión."
-                : `Período de prueba${sus.pruebaHasta ? " hasta el " + fmtFecha(sus.pruebaHasta) : ""} · plan ${sus.plan}.`}
-            </div>
-          )}
+          {sus && sus.estado !== "activa" && (() => {
+            const pruebaVencida = sus.estado === "prueba" && sus.pruebaHasta && sus.pruebaHasta < toISO(hoy);
+            const alerta = bloqueada || pruebaVencida;
+            return (
+              <div className="row between" style={{ padding: "8px 24px", fontSize: 12.5, background: alerta ? EST.atrasado.bg : sus.estado === "morosa" ? C.warningBg : C.infoBg, color: alerta ? "#B91C1C" : sus.estado === "morosa" ? C.warning : C.info, borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+                <span>{bloqueada ? "Suscripción suspendida: puedes ver tus datos, pero no modificarlos. Para reactivarla:"
+                  : sus.estado === "morosa" ? "Tu suscripción tiene un pago pendiente. Regulariza para evitar la suspensión."
+                  : pruebaVencida ? `Tu período de prueba terminó el ${fmtFecha(sus.pruebaHasta)}. Elige un plan para seguir usando Qipo Arriendos sin interrupciones.`
+                  : `Período de prueba hasta el ${fmtFecha(sus.pruebaHasta)} · plan ${sus.plan} (durante la prueba tienes todas las funciones).`}</span>
+                {(alerta || sus.estado === "morosa") && esAdminEmp(user) && <ContactoHM motivo="mi suscripción" compacto />}
+              </div>
+            );
+          })()}
           <div className="content"><Vista /></div>
         </div>
       </div>

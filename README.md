@@ -39,5 +39,6 @@ Proyecto Supabase `qipo-arriendos`. Las migraciones están en `supabase/migratio
 | `20261022060000_acceso_soporte.sql` | aplicada |
 | `20261023000000_reajustes_ipc_uf.sql` | aplicada |
 | `20261024000000_roles_corredores_seguridad.sql` | aplicada (reemplaza las políticas; `20261020020000_optimizar_politicas.sql` queda superada) |
+| `20261025000000_contrato_al_dia_hasta.sql` | aplicada |
 
 Los administradores de plataforma (Torre de Control HM) se cargan en `privado.admins_invitados` directamente en la base y quedan activos al registrarse con ese correo. La función `plataforma_empresas()` resume cada empresa cliente (plan, estado, unidades, ingreso mensual). Todo lo de plataforma exige verificación en dos pasos, y Soporte HM entra a una empresa solo con un acceso temporal de 2 horas (`abrir_acceso_soporte`) que el cliente ve en su bitácora.
