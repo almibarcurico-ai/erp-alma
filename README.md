@@ -12,7 +12,7 @@ Plataforma de gestión de arriendos para propiedades y centros comerciales. Es u
 - **Desocupadas**: se envía la ficha a un interesado por WhatsApp o correo, se comparten las fotos desde el celular o se genera una ficha en PDF. Cada envío queda registrado.
 - **Contratos y anexos**: contrato habitacional y comercial, anexos de renta, de prórroga y libre, acta de término, aviso de no renovación, carta de cobranza y acta de entrega. Se pueden editar e imprimir en PDF o descargar en Word.
 - **Panel del dueño**: ingresos del mes en tiempo real, morosidad, ocupación, ingresos de los últimos 6 meses y alertas.
-- **Cuentas en la nube (Supabase)**: cada empresa cliente se registra sola con 14 días de prueba y ve solo sus datos. El dueño invita a la secretaria por correo. Los cambios se ven en tiempo real en todos los equipos. La secretaria opera el día a día; solo el dueño ve los ingresos, decide las multas, elimina datos y administra usuarios. Todo queda en la bitácora.
+- **Cuentas en la nube (Supabase)**: cada empresa cliente se registra sola con 14 días de prueba y ve solo sus datos. Roles por empresa: **super administrador** (todo), **administrador** (todo salvo los super administradores) y, en las corredoras, **corredor** (opera la cartera y cobra un % de la comisión de administración de las propiedades a su cargo; no ve datos bancarios ni liquidaciones). Los cambios se ven en tiempo real en todos los equipos y todo queda en la bitácora; las acciones sensibles las registra el servidor.
 - La **UF** se actualiza automáticamente desde mindicador.cl, y también se puede ingresar a mano.
 
 ### Base de datos
@@ -38,5 +38,6 @@ Proyecto Supabase `qipo-arriendos`. Las migraciones están en `supabase/migratio
 | `20261022050000_web_logo.sql` | aplicada |
 | `20261022060000_acceso_soporte.sql` | aplicada |
 | `20261023000000_reajustes_ipc_uf.sql` | aplicada |
+| `20261024000000_roles_corredores_seguridad.sql` | aplicada (reemplaza las políticas; `20261020020000_optimizar_politicas.sql` queda superada) |
 
-Los administradores de plataforma (Torre de Control HM) se cargan en `privado.admins_invitados` directamente en la base y quedan activos al registrarse con ese correo. La vista `torre_empresas` resume cada empresa cliente (plan, estado, unidades, ingreso mensual en UF).
+Los administradores de plataforma (Torre de Control HM) se cargan en `privado.admins_invitados` directamente en la base y quedan activos al registrarse con ese correo. La función `plataforma_empresas()` resume cada empresa cliente (plan, estado, unidades, ingreso mensual). Todo lo de plataforma exige verificación en dos pasos, y Soporte HM entra a una empresa solo con un acceso temporal de 2 horas (`abrir_acceso_soporte`) que el cliente ve en su bitácora.

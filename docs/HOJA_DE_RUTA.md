@@ -12,7 +12,7 @@ Estados: ✅ hecho · 🟡 parcial · ⬜ pendiente
 |---|---|---|
 | Multiempresa | 🟡 | empresas, miembros, invitaciones, RLS por empresa, planes con límite de unidades validado en la base |
 | Superadmin (Torre de Control HM) | ✅ | panel de plataforma en la app (`#plataforma`): inmobiliarias, MRR, suscripciones, cobros, planes y bitácora; resumen también en la Torre de Control (hm-panel) |
-| Roles | 🟡 | dueño y secretaria |
+| Roles | ✅ | super administrador, administrador y corredor (con comisión sobre la administración de sus propiedades) |
 | Propiedades | 🟡 | propiedades y unidades (locales), mapa, fotos, servicios (luz, agua, gastos comunes), inventario con fotos |
 | Arriendos y cobranza | 🟡 | contratos UF/CLP, día de pago, pagos, abonos, multas opcionales, IVA opcional, reajuste % cada N meses |
 | Documentos | 🟡 | contrato, anexos e inventario generados en HTML/Word/PDF |

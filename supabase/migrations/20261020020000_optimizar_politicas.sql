@@ -1,3 +1,5 @@
+-- SUPERADA por 20261024000000_roles_corredores_seguridad.sql, que reescribe todas las políticas.
+-- No aplicar en producción. Se conserva para reconstruir la base desde cero en orden.
 -- Optimización de políticas (advisors de rendimiento de Supabase). PENDIENTE de aplicar:
 -- contiene DROP POLICY, que el conector de Supabase no ejecuta sin confirmación;
 -- aplicarlo desde el editor SQL del panel de Supabase.
