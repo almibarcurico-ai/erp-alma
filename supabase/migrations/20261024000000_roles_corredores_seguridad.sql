@@ -16,6 +16,11 @@
 --    (borrados, cambios bancarios, usuarios) se registran solas, aunque se use la API directa.
 --  · Multas protegidas también al crear contratos, límite de usuarios también en miembros,
 --    invitaciones solo con correo confirmado, formulario web con límite por IP.
+--
+-- En producción se aplicó en 5 partes (roles_corredores_seguridad_1..5) con ALTER POLICY en vez de
+-- DROP/CREATE (el conector exige confirmación para borrar): mismas reglas, con los nombres de política
+-- anteriores (p. ej. planes_admin en vez de planes_escribir). Quedan pendientes, por requerir esa
+-- confirmación, borrar la vista torre_empresas (ya sin uso) y la fila sobrante de privado.admins_invitados.
 
 -- ─── 1. Roles ────────────────────────────────────────────────────────────────
 alter table public.miembros drop constraint miembros_rol_check;
