@@ -362,6 +362,41 @@ function comprimirImagen(file, max = 1200, calidad = 0.72) {
   });
 }
 
+// Limpia HTML de documentos y plantillas antes de mostrarlo o imprimirlo: solo etiquetas de texto y
+// tablas, sin scripts, eventos (onerror, onclick…) ni enlaces javascript:. Evita que un documento
+// guardado (o un respaldo importado) ejecute código con la sesión de quien lo abre.
+const HTML_PERMITIDO = new Set(["P", "BR", "B", "STRONG", "I", "EM", "U", "S", "H1", "H2", "H3", "H4", "UL", "OL", "LI", "TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH",
+  "DIV", "SPAN", "IMG", "A", "HR", "BLOCKQUOTE", "SMALL", "SUP", "SUB", "FONT", "CENTER", "SECTION"]);
+const ATRIB_PERMITIDOS = new Set(["style", "src", "href", "alt", "colspan", "rowspan", "align", "width", "height", "border", "cellpadding", "cellspacing", "class", "color", "size", "face"]);
+function urlSegura(u, img) {
+  const s = String(u || "").trim();
+  return /^https:\/\//i.test(s) || (img && /^data:image\/(png|jpe?g|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(s)) || /^(mailto:|tel:|#)/i.test(s) && !img;
+}
+function limpiarHTML(html) {
+  const doc = new DOMParser().parseFromString(`<div>${html || ""}</div>`, "text/html");
+  const raiz = doc.body.firstChild;
+  const limpiar = nodo => [...nodo.childNodes].forEach(n => {
+    if (n.nodeType === 3) return;
+    if (n.nodeType !== 1 || !HTML_PERMITIDO.has(n.tagName)) {
+      // etiquetas peligrosas se eliminan con su contenido; las desconocidas dejan solo su texto
+      if (n.nodeType === 1 && !["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "SVG", "MATH", "TEMPLATE", "LINK", "META", "BASE", "FORM", "INPUT", "BUTTON", "TEXTAREA", "SELECT"].includes(n.tagName)) { limpiar(n); n.replaceWith(...n.childNodes); }
+      else n.remove();
+      return;
+    }
+    [...n.attributes].forEach(a => {
+      const nom = a.name.toLowerCase();
+      if (!ATRIB_PERMITIDOS.has(nom)) n.removeAttribute(a.name);
+      else if ((nom === "src" || nom === "href") && !urlSegura(a.value, nom === "src")) n.removeAttribute(a.name);
+      else if (nom === "style" && /(expression|url\s*\(|javascript:|@import|behavior)/i.test(a.value)) n.removeAttribute(a.name);
+    });
+    if (n.tagName === "A") { n.setAttribute("rel", "noopener noreferrer"); n.setAttribute("target", "_blank"); }
+    limpiar(n);
+  });
+  limpiar(raiz);
+  return raiz.innerHTML;
+}
+const imgSegura = f => urlSegura(f, true) ? `<img src="${esc(f)}"` : `<img alt=""`;
+
 function imprimirHTML(titulo, cuerpo) {
   const w = window.open("", "_blank");
   if (!w) { alert("Permite las ventanas emergentes para imprimir o guardar en PDF."); return; }
@@ -370,12 +405,12 @@ function imprimirHTML(titulo, cuerpo) {
     h1,h2{font-family:Arial,sans-serif;text-align:center}h2{font-size:16px}p{text-align:justify;margin:0 0 10px}
     img{max-width:100%}.fotos{display:grid;grid-template-columns:1fr 1fr;gap:8px}.fotos img{width:100%;height:200px;object-fit:cover;border-radius:6px}
     table{width:100%;border-collapse:collapse}td{padding:4px 6px;border-bottom:1px solid #ddd}td:first-child{color:#555;width:40%}
-    @media print{body{margin:0}}</style></head><body>${cuerpo}<script>setTimeout(()=>print(),400)<\/script></body></html>`);
+    @media print{body{margin:0}}</style></head><body>${limpiarHTML(cuerpo)}<script>setTimeout(()=>print(),400)<\/script></body></html>`);
   w.document.close();
 }
 
 function descargarWord(nombre, html) {
-  const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><style>body{font-family:Georgia,serif;font-size:12pt;line-height:1.5}h2{text-align:center}p{text-align:justify}</style></head><body>${html}</body></html>`;
+  const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><style>body{font-family:Georgia,serif;font-size:12pt;line-height:1.5}h2{text-align:center}p{text-align:justify}</style></head><body>${limpiarHTML(html)}</body></html>`;
   const blob = new Blob(["﻿", doc], { type: "application/msword" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = nombre.replace(/[^\w\-áéíóúñÁÉÍÓÚÑ ]+/g, "").trim() + ".doc";
@@ -502,7 +537,7 @@ async function cargarEmpresa(E) {
     q(f("invitaciones")().is("aceptada", null)),
     q(sb.from("planes").select("*").eq("activo", true).order("orden")),
     todas(f("propietarios")),
-    q(f("propietarios_banco")()),            // solo el dueño los recibe (RLS)
+    q(f("propietarios_banco")()),            // solo los administradores los reciben (RLS)
     todas(() => f("liquidaciones")().order("creado", { ascending: false })), // ídem
     todas(f("reajustes")),
   ]);
@@ -522,11 +557,11 @@ async function cargarEmpresa(E) {
     liquidaciones: liqs.map(l => ({ id: l.id, propietarioId: l.propietario_id, periodo: l.periodo, detalle: l.detalle, totalCobrado: l.total_cobrado, comision: l.comision,
       ivaComision: l.iva_comision, descuentos: l.descuentos, total: l.total, estado: l.estado, pagadaEn: l.pagada_en, medio: l.medio || "", emitidaPor: l.emitida_por || "", creado: l.creado })),
     uf: local.get("qipo-uf") || { valor: 39800, fecha: "", auto: true },
-    usuarios: mies.map(m => ({ id: m.user_id, nombre: m.nombre, rol: m.rol, activo: m.activo })),
+    usuarios: mies.map(m => ({ id: m.user_id, nombre: m.nombre, rol: m.rol, activo: m.activo, comisionPct: m.comision_pct == null ? "" : Number(m.comision_pct) })),
     invitaciones: invs,
     propiedades: props.map(p => ({
       id: p.id, tipo: p.tipo, nombre: p.nombre, direccion: vacio(p.direccion), comuna: vacio(p.comuna), ciudad: vacio(p.ciudad),
-      lat: p.lat, lng: p.lng, rol: vacio(p.rol_sii), notas: vacio(p.notas), arrendador: p.arrendador || {}, propietarioId: p.propietario_id || "",
+      lat: p.lat, lng: p.lng, rol: vacio(p.rol_sii), notas: vacio(p.notas), arrendador: p.arrendador || {}, propietarioId: p.propietario_id || "", corredorId: p.corredor_id || "",
       unidades: unis.filter(u => u.propiedad_id === p.id).map(u => {
         const vig = cons.find(c => c.unidad_id === u.id && c.vigente);
         return {
@@ -552,12 +587,12 @@ function filas(st, E) {
   (st.propietarios || []).forEach(pr => {
     t.propietarios.set(pr.id, { id: pr.id, empresa_id: E, nombre: pr.nombre, rut: n(pr.rut), email: n(pr.email), telefono: n(pr.telefono), domicilio: n(pr.domicilio),
       representante: n(pr.representante), rut_rep: n(pr.rutRep), comision_pct: Number(pr.comisionPct) || 0, comision_iva: pr.comisionIva !== false, notas: n(pr.notas) });
-    // null: no se leyó (secretaria) o no existe aún; solo se escribe cuando el dueño lo completa
+    // null: no se leyó (corredor) o no existe aún; solo se escribe cuando un administrador lo completa
     if (pr.banco) t.propietarios_banco.set(pr.id, { id: pr.id, empresa_id: E, datos: pr.banco });
   });
   st.propiedades.forEach(p => {
     t.propiedades.set(p.id, { id: p.id, empresa_id: E, tipo: p.tipo, nombre: p.nombre, direccion: n(p.direccion), comuna: n(p.comuna), ciudad: n(p.ciudad),
-      lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {}, propietario_id: n(p.propietarioId) });
+      lat: Number(p.lat), lng: Number(p.lng), rol_sii: n(p.rol), notas: n(p.notas), arrendador: p.arrendador || {}, propietario_id: n(p.propietarioId), corredor_id: n(p.corredorId) });
     p.unidades.forEach((u, i) => {
       t.unidades.set(u.id, { id: u.id, empresa_id: E, propiedad_id: p.id, nombre: u.nombre, categoria: u.categoria || "otro", m2: num(u.m2), dormitorios: num(u.dormitorios),
         banos: num(u.banos), estacionamientos: num(u.estacionamientos), descripcion: n(u.descripcion), precio_uf: num(u.precioUF), fotos: u.fotos || [], servicios: u.servicios || {}, inventario: u.inventario || [], orden: i,
@@ -969,7 +1004,7 @@ function generarDocumento(tipo, { st, p, u, extra, hoy, uf }) {
     case "inventario": {
       const items = u.inventario || [];
       const recintos = [...new Set(items.map(i => i.recinto || "General"))];
-      const fotos = i => (i.fotos || []).map(f => `<img src="${f}" style="width:110px;height:82px;object-fit:cover;margin:4px 4px 0 0;border-radius:4px"/>`).join("");
+      const fotos = i => (i.fotos || []).map(f => `${imgSegura(f)} style="width:110px;height:82px;object-fit:cover;margin:4px 4px 0 0;border-radius:4px"/>`).join("");
       const tablas = recintos.map(rc => `<p><b>${h(rc)}</b></p><table border="1" cellpadding="6" style="border-collapse:collapse;width:100%;margin-bottom:12px"><tr><td><b>Ítem</b></td><td><b>Cant.</b></td><td><b>Estado</b></td><td><b>Observaciones y fotos</b></td></tr>${
         items.filter(i => (i.recinto || "General") === rc).map(i => `<tr><td>${h(i.nombre)}</td><td>${h(i.cantidad || 1)}</td><td>${ESTADOS_INV[i.estado] || "—"}</td><td>${h(i.notas || "")}${(i.fotos || []).length ? "<br/>" + fotos(i) : ""}</td></tr>`).join("")}</table>`).join("");
       return `<h2>ACTA DE INVENTARIO</h2><p>${partes}, dejan constancia del siguiente inventario del inmueble ubicado en ${inmueble}, que se entrega junto con el contrato de arrendamiento y que el Arrendatario se obliga a restituir en el mismo estado, salvo el desgaste producido por el uso legítimo:</p>
@@ -1033,8 +1068,13 @@ function datosEjemplo(hoy) {
 // ─── CONTEXTO ─────────────────────────────────────────────────────────────────
 const Ctx = createContext(null);
 const useApp = () => useContext(Ctx);
-const PERMISOS_SECRETARIA = ["editar", "pagos", "contratos", "comunicar", "interesados"];
-const puede = (user, accion) => !!user && (user.rol === "dueno" || PERMISOS_SECRETARIA.includes(accion));
+// Roles por empresa: super_admin (todo, incluidos otros super administradores), admin (todo salvo
+// los super administradores) y corredor (solo en corredoras: opera la cartera y cobra comisión).
+const ROLES = { super_admin: "Super administrador", admin: "Administrador", corredor: "Corredor" };
+const nombreRol = r => ROLES[r] || r;
+const esAdminEmp = u => !!u && (u.rol === "super_admin" || u.rol === "admin");
+const PERMISOS_CORREDOR = ["editar", "pagos", "contratos", "comunicar", "interesados"];
+const puede = (user, accion) => !!user && (esAdminEmp(user) || PERMISOS_CORREDOR.includes(accion));
 // Funciones según el plan (en la prueba se habilita todo). La base valida lo mismo con privado.plan_permite.
 const FUNCIONES_PLAN = { propietarios: "Propietarios y liquidaciones", exportar: "Exportar a Excel", soporte_prioritario: "Soporte prioritario y migración de datos" };
 const planPermite = (st, funcion) => !!st.suscripcion && (st.suscripcion.estado === "prueba" || st.suscripcion.funciones.includes(funcion));
@@ -1266,7 +1306,7 @@ function Acceso() {
           : <a href="#" onClick={e => { e.preventDefault(); setModo("registro"); setMsg({}); }}>Crear cuenta nueva</a>}
         {modo === "entrar" && <a href="#" onClick={e => { e.preventDefault(); setModo("recuperar"); setMsg({}); }}>Olvidé mi clave</a>}
       </div>
-      {modo === "registro" && <div className="muted" style={{ marginTop: 14 }}>Si te invitaron como secretaria, regístrate con el mismo correo de la invitación.</div>}
+      {modo === "registro" && <div className="muted" style={{ marginTop: 14 }}>Si te invitaron a una empresa, regístrate con el mismo correo de la invitación.</div>}
     </PantallaCentrada>
   );
 }
@@ -1314,7 +1354,7 @@ function Bienvenida({ sesionSb, empresas, esAdmin, onPlataforma, onElegir, onCre
           {empresas.map(m => (
             <div key={m.empresa_id} className="alert-row" onClick={() => onElegir(m.empresa_id)}>
               <span style={{ fontSize: 18 }}>🏢</span>
-              <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{m.empresas ? m.empresas.nombre : "Empresa"}</div><div className="muted">{m.rol === "dueno" ? "Dueño" : "Secretaria"}</div></div>
+              <div style={{ flex: 1 }}><div style={{ fontWeight: 600 }}>{m.empresas ? m.empresas.nombre : "Empresa"}</div><div className="muted">{nombreRol(m.rol)}</div></div>
               <span className="muted">›</span>
             </div>
           ))}
@@ -1329,7 +1369,7 @@ function Bienvenida({ sesionSb, empresas, esAdmin, onPlataforma, onElegir, onCre
           {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
           <button className="btn btn-primary" style={{ justifyContent: "center", padding: 11 }}>Crear empresa</button>
           {empresas.length > 0 && <button type="button" className="btn btn-ghost" onClick={() => setCreando(false)}>‹ Volver</button>}
-          <div className="muted">¿Te invitaron como secretaria? No crees una empresa: pide al dueño que te invite con este correo ({sesionSb.user.email}) y vuelve a ingresar.</div>
+          <div className="muted">¿Te invitaron a una empresa? No crees una nueva: pide a su administrador que te invite con este correo ({sesionSb.user.email}) y vuelve a ingresar.</div>
         </form>
       )}
       <button className="btn btn-ghost btn-sm" style={{ marginTop: 16 }} onClick={() => sb.auth.signOut()}>↩ Cerrar sesión</button>
@@ -1405,7 +1445,7 @@ function PanelView() {
   const [filtro, setFiltro] = useState("todas");
   const filtroFn = useCallback(pt => filtro === "todas" || (filtro === "libres" ? pt.cp.libres > 0 : pt.cp.ocupadas > 0), [filtro]);
   const puntos = usePuntos(st.propiedades, filtroFn, filtro === "libres");
-  const esDueno = user.rol === "dueno";
+  const esAdm = esAdminEmp(user);
   const pct = fin.esperado ? Math.min(100, fin.cobrado / fin.esperado * 100) : 0;
   const libres = listarUnidades(st).filter(x => !x.u.contrato);
 
@@ -1413,13 +1453,13 @@ function PanelView() {
     <div className="grid fade-up" style={{ gap: 20 }}>
       <div className="row between">
         <div>
-          <div className="h1">{esDueno ? "Panel del dueño" : "Panel de trabajo"}</div>
+          <div className="h1">{esAdm ? "Panel de administración" : "Panel de trabajo"}</div>
           <div className="muted">Hola {user.nombre.split(" ")[0]} · {fmtFechaLarga(hoy)}</div>
         </div>
         <span className="live"><span className="dot" />En vivo</span>
       </div>
 
-      {esDueno && (
+      {esAdm && (
         <div className="card" style={{ background: `linear-gradient(135deg, ${C.sidebar}, ${C.blue})`, color: "#fff", border: "none" }}>
           <div className="row between">
             <div>
@@ -1439,8 +1479,8 @@ function PanelView() {
       )}
 
       <div className="grid g4">
-        {esDueno && <Kpi label="Por cobrar este mes" valor={fmtCLP(fin.porCobrar)} sub="Rentas del mes aún no pagadas" icono="⏳" />}
-        {esDueno && <Kpi label="Morosidad" valor={fmtCLP(fin.morosidad)} sub={`Incluye ${fmtCLP(fin.multas)} en multas`} color={fin.morosidad ? "#DC2626" : null} icono="⚠️" />}
+        {esAdm && <Kpi label="Por cobrar este mes" valor={fmtCLP(fin.porCobrar)} sub="Rentas del mes aún no pagadas" icono="⏳" />}
+        {esAdm && <Kpi label="Morosidad" valor={fmtCLP(fin.morosidad)} sub={`Incluye ${fmtCLP(fin.multas)} en multas`} color={fin.morosidad ? "#DC2626" : null} icono="⚠️" />}
         <Kpi label="Ocupadas" valor={`${fin.ocupadas} / ${fin.total}`} sub="Unidades con contrato vigente" icono="🔑" />
         <Kpi label="Desocupadas" valor={fin.libres} sub="Disponibles para arrendar" color={EST.libre.color} icono="🏷️" />
       </div>
@@ -1460,7 +1500,7 @@ function PanelView() {
 
       <div className="grid g2">
         <div className="card"><div className="h2">Alertas de cobranza y contratos</div><Alertas /></div>
-        {esDueno ? (
+        {esAdm ? (
           <div className="card">
             <div className="h2">Pagos recibidos este mes</div>
             {fin.pagosMes.length ? (
@@ -1483,7 +1523,7 @@ function PanelView() {
         )}
       </div>
 
-      {esDueno && (
+      {esAdm && (
         <div className="grid g2">
           <div className="card"><div className="h2">Ingresos últimos 6 meses</div><GraficoIngresos porMes={fin.porMes} /></div>
           <div className="card">
@@ -1727,7 +1767,7 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
   const updC = (k, v) => onChange({ ...u, contrato: { ...c, [k]: v } });
   const updA = (k, v) => updC("arrendatario", { ...c.arrendatario, [k]: v });
   const updM = (k, v) => updC("multa", { ...c.multa, [k]: v });
-  const esDueno = user.rol === "dueno";
+  const esAdm = esAdminEmp(user);
   const unidadMoneda = c && c.moneda === "CLP" ? "$" : "UF";
 
   return (
@@ -1823,12 +1863,12 @@ function UnidadEditor({ value: u, onChange, esLocal }) {
           <div className="card" style={{ marginTop: 14, background: c.multa.cobrar ? C.warningBg : C.bg, padding: 14 }}>
             <div className="row between">
               <div style={{ fontWeight: 700, fontSize: 13 }}>Multa por atraso</div>
-              <label className="switch" title={esDueno ? "" : "Solo el dueño decide si se cobra la multa"}>
-                <input type="checkbox" checked={!!c.multa.cobrar} disabled={!esDueno} onChange={e => updM("cobrar", e.target.checked)} />
+              <label className="switch" title={esAdm ? "" : "Solo un administrador decide si se cobra la multa"}>
+                <input type="checkbox" checked={!!c.multa.cobrar} disabled={!esAdm} onChange={e => updM("cobrar", e.target.checked)} />
                 Cobrar multa automáticamente
               </label>
             </div>
-            <div className="muted" style={{ margin: "4px 0 10px" }}>Según lo acordado en el contrato. Al vencer la fecha (más los días de gracia) la multa se suma sola a la deuda. {!esDueno && "Solo el dueño puede activarla o desactivarla."}</div>
+            <div className="muted" style={{ margin: "4px 0 10px" }}>Según lo acordado en el contrato. Al vencer la fecha (más los días de gracia) la multa se suma sola a la deuda. {!esAdm && "Solo un administrador puede activarla o desactivarla."}</div>
             <div className="form-grid">
               <Campo label="Tipo de multa">
                 <select className="select" value={c.multa.tipo} onChange={e => updM("tipo", e.target.value)}>
@@ -1923,6 +1963,15 @@ function PropiedadForm({ inicial, onClose }) {
         posicion={{ lat: p.lat, lng: p.lng, centrar }}
         onElegir={ll => setP(x => ({ ...x, lat: Number(ll.lat.toFixed(6)), lng: Number(ll.lng.toFixed(6)) }))} />
 
+      {esAdminEmp(user) && st.usuarios.some(x => x.rol === "corredor" && x.activo !== false) && <>
+        <div className="section-title">Corredor a cargo</div>
+        <div className="form-grid" style={{ marginBottom: 8 }}>
+          <Campo label="Corredor"><select className="select" value={p.corredorId || ""} onChange={e => upd("corredorId", e.target.value)}>
+            <option value="">— Sin corredor —</option>
+            {st.usuarios.filter(x => x.rol === "corredor" && (x.activo !== false || x.id === p.corredorId)).map(x => <option key={x.id} value={x.id}>{x.nombre}{x.comisionPct !== "" ? ` · ${x.comisionPct}% de la comisión` : ""}</option>)}
+          </select></Campo>
+        </div>
+      </>}
       <div className="section-title">Propietario (arrendador)</div>
       {(st.propietarios || []).length > 0 && (
         <div className="form-grid" style={{ marginBottom: 8 }}>
@@ -1933,7 +1982,7 @@ function PropiedadForm({ inicial, onClose }) {
         </div>
       )}
       {!p.propietarioId && <>
-        <div className="muted" style={{ marginBottom: 8 }}>Déjalo vacío si el arrendador es {st.empresa.nombre}.{planPermite(st, "propietarios") && user.rol === "dueno" ? " Si administras propiedades de terceros, regístralos en Propietarios para hacerles liquidaciones." : ""}</div>
+        <div className="muted" style={{ marginBottom: 8 }}>Déjalo vacío si el arrendador es {st.empresa.nombre}.{planPermite(st, "propietarios") && esAdminEmp(user) ? " Si administras propiedades de terceros, regístralos en Propietarios para hacerles liquidaciones." : ""}</div>
         <div className="form-grid">
           <Campo label="Nombre"><input className="input" value={p.arrendador?.nombre || ""} onChange={e => updArr("nombre", e.target.value)} placeholder={st.empresa.nombre} /></Campo>
           <Campo label="RUT"><input className="input" value={p.arrendador?.rut || ""} onChange={e => updArr("rut", e.target.value)} /></Campo>
@@ -1969,7 +2018,7 @@ function PropiedadForm({ inicial, onClose }) {
       {localEdit && (
         <Modal titulo={`Local: ${localEdit.nombre}`} onClose={() => setLocalEdit(null)} ancho={760}
           pie={<>
-            {p.unidades.some(x => x.id === localEdit.id) && user.rol === "dueno" &&
+            {p.unidades.some(x => x.id === localEdit.id) && esAdminEmp(user) &&
               <button className="btn btn-danger" style={{ marginRight: "auto" }} onClick={() => { if (confirm("¿Eliminar este local?")) { setP(x => ({ ...x, unidades: x.unidades.filter(u => u.id !== localEdit.id) })); setLocalEdit(null); } }}>Eliminar local</button>}
             <button className="btn btn-ghost" onClick={() => setLocalEdit(null)}>Cancelar</button>
             <button className="btn btn-primary" onClick={() => { setP(x => { const i = x.unidades.findIndex(u => u.id === localEdit.id); const us = [...x.unidades]; if (i >= 0) us[i] = localEdit; else us.push(localEdit); return { ...x, unidades: us }; }); setLocalEdit(null); }}>Listo</button>
@@ -2064,9 +2113,9 @@ function PagoModal({ p, u, onClose, modoInicial = "pago" }) {
         </dl>
         {esAbono && <div className="muted" style={{ marginTop: 8 }}>{total > 0 && total >= montoCLP + multaCLP ? "✅ Con este abono el mes queda pagado." : total > 0 ? `Quedará un saldo de ${fmtCLP(montoCLP + multaCLP - total)}.` : `Falta pagar ${fmtCLP(montoCLP + multaCLP)}${multaCLP ? " (renta + multa)" : ""}. El abono cubre primero la renta y luego la multa.`}</div>}
         {!esAbono && c.multa?.cobrar && calcMulta(c, diasAtraso, f.periodo) > 0 && (
-          <label className="switch" style={{ marginTop: 10 }} title={user.rol !== "dueno" ? "Solo el dueño puede condonar multas" : ""}>
-            <input type="checkbox" checked={f.condonar} disabled={user.rol !== "dueno"} onChange={e => setF({ ...f, condonar: e.target.checked })} />
-            Condonar multa de este mes {user.rol !== "dueno" && <span className="muted">(solo dueño)</span>}
+          <label className="switch" style={{ marginTop: 10 }} title={!esAdminEmp(user) ? "Solo un administrador puede condonar multas" : ""}>
+            <input type="checkbox" checked={f.condonar} disabled={!esAdminEmp(user)} onChange={e => setF({ ...f, condonar: e.target.checked })} />
+            Condonar multa de este mes {!esAdminEmp(user) && <span className="muted">(solo administradores)</span>}
           </label>
         )}
       </div>
@@ -2140,7 +2189,7 @@ function CompartirModal({ p, u, onClose }) {
   };
   const fichaPDF = () => {
     imprimirHTML(`Ficha ${nombreUnidad(p, u)}`, `<h1 style="font-size:20px">${esc(nombreUnidad(p, u))}</h1><p style="text-align:center">${esc(p.direccion)}${p.comuna ? ", " + esc(p.comuna) : ""}</p>
-      <div class="fotos">${(u.fotos || []).slice(0, 6).map(f => `<img src="${f}"/>`).join("")}</div>
+      <div class="fotos">${(u.fotos || []).slice(0, 6).map(f => `${imgSegura(f)}/>`).join("")}</div>
       <table style="margin-top:14px"><tr><td>Tipo</td><td>${CATEGORIAS[u.categoria] || ""}</td></tr>${u.m2 ? `<tr><td>Superficie</td><td>${u.m2} m²</td></tr>` : ""}${u.dormitorios ? `<tr><td>Dormitorios</td><td>${u.dormitorios}</td></tr>` : ""}${u.banos ? `<tr><td>Baños</td><td>${u.banos}</td></tr>` : ""}${u.estacionamientos ? `<tr><td>Estacionamientos</td><td>${u.estacionamientos}</td></tr>` : ""}${u.precioUF ? `<tr><td>Valor mensual</td><td>${fmtUF(u.precioUF)} (aprox. ${fmtCLP(u.precioUF * uf)})</td></tr>` : ""}</table>
       ${u.descripcion ? `<p style="margin-top:14px">${esc(u.descripcion)}</p>` : ""}<p>Ubicación: https://www.google.com/maps?q=${p.lat},${p.lng}</p>`);
     registrar("ficha PDF");
@@ -2233,7 +2282,7 @@ function ReajusteFicha({ p, u, c }) {
           {hist.slice().reverse().map(r => (
             <div key={r.id} style={{ fontSize: 12, padding: "3px 0" }}>
               <b>{nombrePeriodo(r.desde)}</b>: {fmtMonto(r.valorAnterior, c.moneda)} → {fmtMonto(r.valorNuevo, c.moneda)} <span className="muted">· {detalleIndice(r)}{r.registradoPor ? ` · aplicó ${r.registradoPor}${r.creado ? " el " + fmtFecha(r.creado.slice(0, 10)) : ""}` : ""}</span>
-              {ultimo && r.id === ultimo.id && user.rol === "dueno" && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6, padding: "1px 8px" }} onClick={deshacer}>Deshacer</button>}
+              {ultimo && r.id === ultimo.id && esAdminEmp(user) && <button className="btn btn-ghost btn-sm" style={{ marginLeft: 6, padding: "1px 8px" }} onClick={deshacer}>Deshacer</button>}
             </div>
           ))}
         </div>
@@ -2253,7 +2302,7 @@ function FichaDrawer({ propId, unidadId, onClose }) {
   const esCentro = p.tipo === "centro";
   const u = esCentro ? p.unidades.find(x => x.id === unidadId) : p.unidades[0];
   const cp = calcPropiedad(p, hoy, uf);
-  const esDueno = user.rol === "dueno";
+  const esAdm = esAdminEmp(user);
 
   const eliminar = () => {
     if (!confirm(`¿Eliminar "${p.nombre}" y todos sus datos? Esta acción no se puede deshacer.`)) return;
@@ -2278,8 +2327,8 @@ function FichaDrawer({ propId, unidadId, onClose }) {
             {u ? <Badge estado={calcUnidad(u, hoy, uf).estado} /> : <Badge estado={cp.estado} />}
             {puede(user, "editar") && <button className="btn btn-ghost btn-sm" onClick={() => setModal({ t: "editar" })}>✏️ Editar</button>}
             <a className="btn btn-ghost btn-sm" href={`https://www.google.com/maps?q=${p.lat},${p.lng}`} target="_blank" rel="noopener">🗺️ Google Maps</a>
-            {esDueno && !u && <button className="btn btn-danger btn-sm" onClick={eliminar}>Eliminar</button>}
-            {esDueno && u && !esCentro && <button className="btn btn-danger btn-sm" onClick={eliminar}>Eliminar</button>}
+            {esAdm && !u && <button className="btn btn-danger btn-sm" onClick={eliminar}>Eliminar</button>}
+            {esAdm && u && !esCentro && <button className="btn btn-danger btn-sm" onClick={eliminar}>Eliminar</button>}
           </div>
         </div>
         <div className="drawer-body">
@@ -2336,7 +2385,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
   const r = calcUnidad(u, hoy, uf);
   const c = u.contrato;
   const a = c?.arrendatario || {};
-  const esDueno = user.rol === "dueno";
+  const esAdm = esAdminEmp(user);
   const arr = arrendadorDe(st, p);
   const docs = st.documentos.filter(d => d.unidadId === u.id);
   const interes = st.interesados.filter(x => x.unidadId === u.id);
@@ -2439,7 +2488,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                 <div className="card" style={{ marginTop: 10, padding: 12, background: c.multa?.cobrar ? C.warningBg : C.bg }}>
                   <div className="row between">
                     <span style={{ fontSize: 12.5 }}><b>Cobro de multa:</b> {c.multa?.cobrar ? "activo — se aplica automáticamente al vencer" : "desactivado"}</span>
-                    {esDueno ? <button className="btn btn-ghost btn-sm" onClick={toggleMulta}>{c.multa?.cobrar ? "Desactivar" : "Activar"}</button> : <span className="muted">Lo decide el dueño</span>}
+                    {esAdm ? <button className="btn btn-ghost btn-sm" onClick={toggleMulta}>{c.multa?.cobrar ? "Desactivar" : "Activar"}</button> : <span className="muted">Lo decide un administrador</span>}
                   </div>
                 </div>
                 <ReajusteFicha p={p} u={u} c={c} />
@@ -2454,7 +2503,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
               <dl className="kv"><dt>Nombre</dt><dd>{arr.nombre}</dd>{arr.rut && <><dt>RUT</dt><dd>{arr.rut}</dd></>}</dl>
               <div style={{ marginTop: 8 }}><Contactar tel={arr.telefono} email={arr.email} compacto mensaje={`Hola ${arr.nombre || ""}, te escribo por la propiedad ${nombreUnidad(p, u)} (${p.direccion}).`} asunto={`Propiedad ${nombreUnidad(p, u)}`} /></div>
             </div>
-            {c && esDueno && <button className="btn btn-danger btn-sm" style={{ justifySelf: "start" }} onClick={terminar}>Terminar contrato y dejar disponible</button>}
+            {c && esAdm && <button className="btn btn-danger btn-sm" style={{ justifySelf: "start" }} onClick={terminar}>Terminar contrato y dejar disponible</button>}
             {(u.historial || []).length > 0 && (
               <div><div className="h2">Contratos anteriores</div>
                 {u.historial.map((h, i) => <div key={i} className="muted">{h.arrendatario?.nombre} · {fmtFecha(h.inicio)} al {fmtFecha(h.terminado || h.termino)} · {fmtMonto(h.valor, h.moneda)}</div>)}
@@ -2497,7 +2546,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
             </div>}
             {!(c.pagos || []).length && !(c.abonos || []).length ? <div className="empty">Sin pagos registrados.</div> : (
               <div className="table-wrap"><table>
-                <thead><tr><th>Mes</th><th>Tipo</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th>{esDueno && <th></th>}</tr></thead>
+                <thead><tr><th>Mes</th><th>Tipo</th><th>Fecha</th><th className="num">Monto</th><th className="num">Multa</th><th>Medio</th>{esAdm && <th></th>}</tr></thead>
                 <tbody>{[...(c.pagos || []), ...(c.abonos || []).map(a => ({ ...a, esAbono: true }))]
                   .sort((x, y) => y.periodo.localeCompare(x.periodo) || (y.fecha || "").localeCompare(x.fecha || "")).map(pg => (
                   <tr key={pg.id} title={`Registró: ${pg.registradoPor}${pg.obs ? " · " + pg.obs : ""}`}>
@@ -2505,7 +2554,7 @@ function FichaUnidad({ p, u, tab, setTab, setModal }) {
                     <td>{pg.esAbono ? <span className="tag" style={{ background: C.infoBg, color: C.info }}>Abono</span> : "Pago"}</td>
                     <td>{fmtFecha(pg.fecha)}</td>
                     <td className="num">{fmtCLP(pg.montoCLP)}</td><td className="num">{pg.multaCLP ? fmtCLP(pg.multaCLP) : "—"}</td><td>{pg.metodo}</td>
-                    {esDueno && <td><button className="icon-btn" style={{ fontSize: 13 }} onClick={() => borrarPago(pg)}>🗑</button></td>}
+                    {esAdm && <td><button className="icon-btn" style={{ fontSize: 13 }} onClick={() => borrarPago(pg)}>🗑</button></td>}
                   </tr>))}
                 </tbody></table></div>
             )}
@@ -2636,9 +2685,9 @@ function DocumentoModal({ p, u, tipoInicial, onClose }) {
   const [version, setVersion] = useState(0);
   const ref = useRef(null);
   const html = useMemo(() => generarDocumento(tipo, { st, p, u, extra, hoy, uf }), [tipo, extra, version]);
-  useEffect(() => { if (ref.current) ref.current.innerHTML = html; }, [html]);
+  useEffect(() => { if (ref.current) ref.current.innerHTML = limpiarHTML(html); }, [html]);
   const titulo = `${TIPOS_DOC[tipo]} - ${nombreUnidad(p, u)}`;
-  const actual = () => ref.current ? ref.current.innerHTML : html;
+  const actual = () => limpiarHTML(ref.current ? ref.current.innerHTML : html);
   const guardar = () => {
     update(s => { s.documentos.unshift({ id: uid(), propId: p.id, unidadId: u.id, tipo, titulo, fecha: toISO(new Date()), autor: user.nombre, html: actual() }); }, `Generó "${titulo}"`);
     toast("Documento guardado en la ficha");
@@ -2730,7 +2779,7 @@ function CobranzaView() {
   return (
     <div className="grid fade-up" style={{ gap: 14 }}>
       <div className="row between">
-        <div><div className="h1">Cobranza · {MESES[hoy.getMonth()]} {hoy.getFullYear()}</div><div className="muted">UF hoy {fmtCLP(uf)} · las multas se calculan automáticamente solo donde el dueño las activó</div></div>
+        <div><div className="h1">Cobranza · {MESES[hoy.getMonth()]} {hoy.getFullYear()}</div><div className="muted">UF hoy {fmtCLP(uf)} · las multas se calculan automáticamente solo donde un administrador las activó</div></div>
         <button className="btn btn-ghost btn-sm" onClick={() => exportarCobranza(st, hoy, uf, toast)}>⬇️ Excel</button>
       </div>
       <div className="row">
@@ -2840,7 +2889,7 @@ function BitacoraView() {
   const { st } = useApp();
   return (
     <div className="grid fade-up" style={{ gap: 14 }}>
-      <div><div className="h1">Bitácora</div><div className="muted">Registro de lo que hizo cada usuario (dueño y secretaria).</div></div>
+      <div><div className="h1">Bitácora</div><div className="muted">Registro de lo que hizo cada usuario. Las acciones sensibles (🔒) las registra el servidor y no se pueden borrar.</div></div>
       {!st.bitacora.length ? <div className="card empty">Sin movimientos.</div> : (
         <div className="table-wrap"><table>
           <thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Acción</th></tr></thead>
@@ -2975,9 +3024,10 @@ function PropietarioForm({ inicial, onClose }) {
 // Liquidación al propietario: lo efectivamente recibido en el mes (por fecha del pago o abono)
 // en sus propiedades, menos la comisión de administración (+ IVA) y los descuentos.
 // La comisión se calcula sobre la renta sin IVA; las multas van íntegras al propietario.
-function calcLiquidacion(st, pr, periodo, descuentos = []) {
+// Cobros recibidos (por fecha de pago) de una propiedad en el mes
+function cobrosDePropiedad(p, periodo) {
   const cobros = [];
-  st.propiedades.filter(p => p.propietarioId === pr.id).forEach(p => p.unidades.forEach(u => {
+  p.unidades.forEach(u => {
     [...(u.historial || []), ...(u.contrato ? [u.contrato] : [])].forEach(c => {
       const base = { unidad: nombreUnidad(p, u), arrendatario: (c.arrendatario || {}).nombre || "" };
       (c.pagos || []).filter(pg => (pg.fecha || "").slice(0, 7) === periodo).forEach(pg => cobros.push({
@@ -2987,7 +3037,11 @@ function calcLiquidacion(st, pr, periodo, descuentos = []) {
         ...base, ref: "abono:" + a.id, fecha: a.fecha, concepto: `Abono ${nombrePeriodo(a.periodo)}`,
         renta: Math.round(a.montoCLP), iva: c.iva ? Math.round(a.montoCLP * TASA_IVA / (1 + TASA_IVA)) : 0, multa: 0 }));
     });
-  }));
+  });
+  return cobros;
+}
+function calcLiquidacion(st, pr, periodo, descuentos = []) {
+  const cobros = st.propiedades.filter(p => p.propietarioId === pr.id).flatMap(p => cobrosDePropiedad(p, periodo));
   cobros.sort((a, b) => a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0);
   const totalCobrado = cobros.reduce((t, x) => t + x.renta + x.multa, 0);
   const baseComision = cobros.reduce((t, x) => t + x.renta - x.iva, 0);
@@ -2999,6 +3053,87 @@ function calcLiquidacion(st, pr, periodo, descuentos = []) {
   return { cobros, descuentos: desc, pct, comisionIva: conIva, baseComision, totalCobrado, comision, ivaComision, totalDescuentos,
     total: totalCobrado - comision - ivaComision - totalDescuentos };
 }
+// Comisión de cada corredor en el mes: su % sobre la comisión de administración (renta sin IVA × % del
+// propietario) que generaron los cobros de las propiedades que tiene a cargo.
+function calcComisiones(st, periodo) {
+  return st.usuarios.filter(u => u.rol === "corredor").map(c => {
+    const filas = st.propiedades.filter(p => p.corredorId === c.id).map(p => {
+      const pr = p.propietarioId && (st.propietarios || []).find(x => x.id === p.propietarioId);
+      const cobros = cobrosDePropiedad(p, periodo);
+      const base = cobros.reduce((t, x) => t + x.renta - x.iva, 0);
+      return { p, pr, cobrado: cobros.reduce((t, x) => t + x.renta + x.multa, 0), pctAdm: pr ? Number(pr.comisionPct) || 0 : 0,
+        comisionAdm: pr ? Math.round(base * (Number(pr.comisionPct) || 0) / 100) : 0 };
+    });
+    const totalAdm = filas.reduce((t, x) => t + x.comisionAdm, 0), pct = Number(c.comisionPct) || 0;
+    return { c, filas, totalAdm, pct, comision: Math.round(totalAdm * pct / 100), cobrado: filas.reduce((t, x) => t + x.cobrado, 0) };
+  });
+}
+function htmlComision(st, x, periodo) {
+  const h = esc, e = st.empresa;
+  const filas = x.filas.map(f => `<tr><td>${h(f.p.nombre)}</td><td>${h(f.pr ? f.pr.nombre : "Sin propietario")}</td><td style="text-align:right">${fmtCLP(f.cobrado)}</td><td style="text-align:right">${f.pctAdm.toLocaleString("es-CL")}%</td><td style="text-align:right">${fmtCLP(f.comisionAdm)}</td></tr>`).join("")
+    || `<tr><td colspan="5">Sin propiedades a cargo.</td></tr>`;
+  return `<h2>Comisión de corredor · ${nombrePeriodo(periodo)}</h2>
+<p><b>${h(e.nombre)}</b>${e.rut ? ` · RUT ${h(e.rut)}` : ""}</p>
+<table><tr><td>Corredor</td><td><b>${h(x.c.nombre)}</b></td></tr><tr><td>Comisión pactada</td><td>${x.pct.toLocaleString("es-CL")}% de la comisión de administración</td></tr></table>
+<p><br/><b>Propiedades a cargo</b> (cobros recibidos en el mes)</p>
+<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><td><b>Propiedad</b></td><td><b>Propietario</b></td><td style="text-align:right"><b>Cobrado</b></td><td style="text-align:right"><b>% adm.</b></td><td style="text-align:right"><b>Comisión adm.</b></td></tr>${filas}
+<tr><td colspan="4"><b>Total comisión de administración</b></td><td style="text-align:right">${fmtCLP(x.totalAdm)}</td></tr>
+<tr><td colspan="4"><b>Comisión del corredor (${x.pct.toLocaleString("es-CL")}%)</b></td><td style="text-align:right"><b>${fmtCLP(x.comision)}</b></td></tr></table>`;
+}
+
+function CorredoresView() {
+  const { st, user, toast, recargar } = useApp();
+  const [periodo, setPeriodo] = useState(periodoDe(new Date()));
+  const [abierto, setAbierto] = useState(null);
+  const [pcts, setPcts] = useState({});
+  if (!planPermite(st, "propietarios")) return <SinPlan funcion="propietarios" />;
+  const filas = calcComisiones(st, periodo).filter(x => esAdminEmp(user) || x.c.id === user.id);
+  const meses = Array.from({ length: 12 }, (_, i) => sumarMes(periodoDe(new Date()), -i));
+  const guardarPct = async c => {
+    const v = pcts[c.id];
+    if (v === undefined) return;
+    const n = v === "" ? null : Number(v);
+    if (n != null && !(n >= 0 && n <= 100)) return toast("La comisión debe estar entre 0 y 100%");
+    try { await q(sb.from("miembros").update({ comision_pct: n }).eq("empresa_id", st.empresa.id).eq("user_id", c.id)); toast("Comisión guardada"); setPcts(x => { const y = { ...x }; delete y[c.id]; return y; }); recargar(); }
+    catch (e) { toast(mensajeError(e)); }
+  };
+  const total = filas.reduce((t, x) => t + x.comision, 0);
+  return (
+    <div className="grid fade-up" style={{ gap: 16 }}>
+      <div className="row between">
+        <div><div className="h1">{esAdminEmp(user) ? "Corredores" : "Mis comisiones"}</div>
+          <div className="muted">{esAdminEmp(user) ? "Cada corredor cobra un % de la comisión de administración de las propiedades que tiene a cargo (se asignan al editar la propiedad)." : "Tu comisión sobre la administración de las propiedades que tienes a cargo."}</div></div>
+        <select className="select" style={{ width: 180 }} value={periodo} onChange={e => setPeriodo(e.target.value)}>{meses.map(m => <option key={m} value={m}>{nombrePeriodo(m)}</option>)}</select>
+      </div>
+      {filas.length === 0 ? <div className="card empty">{esAdminEmp(user) ? "Aún no hay corredores. Invítalos en Configuración → Usuarios con el rol Corredor." : "Aún no tienes propiedades a cargo."}</div> : (
+        <div className="card table-wrap"><table>
+          <thead><tr><th>Corredor</th><th className="num">Comisión</th><th className="num">Propiedades</th><th className="num">Cobrado</th><th className="num">Comisión adm.</th><th className="num">A pagar</th><th></th></tr></thead>
+          <tbody>
+            {filas.map(x => <React.Fragment key={x.c.id}>
+              <tr className="click" onClick={() => setAbierto(abierto === x.c.id ? null : x.c.id)}>
+                <td style={{ fontWeight: 600 }}>{x.c.nombre}{x.c.activo === false ? <span className="muted"> (desactivado)</span> : null}</td>
+                <td className="num" onClick={e => e.stopPropagation()}>{esAdminEmp(user)
+                  ? <div className="row" style={{ justifyContent: "flex-end", flexWrap: "nowrap" }}><input className="input" style={{ width: 70 }} type="number" min="0" max="100" step="0.5" value={pcts[x.c.id] ?? x.c.comisionPct} onChange={e => setPcts({ ...pcts, [x.c.id]: e.target.value })} />%
+                      {pcts[x.c.id] !== undefined && <button className="btn btn-primary btn-sm" onClick={() => guardarPct(x.c)}>Guardar</button>}</div>
+                  : `${x.pct.toLocaleString("es-CL")}%`}</td>
+                <td className="num">{x.filas.length}</td>
+                <td className="num">{fmtCLP(x.cobrado)}</td>
+                <td className="num">{fmtCLP(x.totalAdm)}</td>
+                <td className="num" style={{ fontWeight: 700 }}>{fmtCLP(x.comision)}</td>
+                <td onClick={e => e.stopPropagation()}><button className="btn btn-ghost btn-sm" onClick={() => imprimirHTML(`Comisión ${x.c.nombre} ${nombrePeriodo(periodo)}`, htmlComision(st, x, periodo))}>PDF</button></td>
+              </tr>
+              {abierto === x.c.id && x.filas.map(f => (
+                <tr key={f.p.id} style={{ background: C.bg }}><td style={{ paddingLeft: 28 }}>{f.p.nombre}</td><td className="muted">{f.pr ? `${f.pr.nombre} · ${f.pctAdm}%` : "Sin propietario (no genera comisión)"}</td><td></td>
+                  <td className="num">{fmtCLP(f.cobrado)}</td><td className="num">{fmtCLP(f.comisionAdm)}</td><td className="num">{fmtCLP(Math.round(f.comisionAdm * x.pct / 100))}</td><td></td></tr>))}
+            </React.Fragment>)}
+          </tbody>
+          {esAdminEmp(user) && filas.length > 1 && <tfoot><tr><td colSpan={5} style={{ fontWeight: 700 }}>Total comisiones de corredores</td><td className="num" style={{ fontWeight: 700 }}>{fmtCLP(total)}</td><td></td></tr></tfoot>}
+        </table></div>
+      )}
+    </div>
+  );
+}
+
 // Valores de una liquidación emitida (lo guardado) o en borrador (lo calculado)
 const valoresLiq = l => l.detalle ? { ...l.detalle, totalCobrado: l.totalCobrado, comision: l.comision, ivaComision: l.ivaComision, totalDescuentos: l.descuentos, total: l.total } : l;
 
@@ -3285,27 +3420,100 @@ function EstadoSus({ estado }) {
   return <span className="tag" style={{ background: bg, color, border: `1px solid ${color}33` }}>{t}</span>;
 }
 
+// Verificación en dos pasos (TOTP con una app como Google Authenticator). La exige la base para
+// todo lo de plataforma y para entrar como soporte a una empresa.
+function DosPasos({ onListo, onSalir }) {
+  const [paso, setPaso] = useState("revisando"); // revisando · enrolar · codigo
+  const [factor, setFactor] = useState(null);
+  const [qr, setQr] = useState(null);
+  const [codigo, setCodigo] = useState("");
+  const [error, setError] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  useEffect(() => { (async () => {
+    try {
+      const { data: nivel } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (nivel && nivel.currentLevel === "aal2") return onListo();
+      const { data: fs } = await sb.auth.mfa.listFactors();
+      const listo = (fs && fs.totp || []).find(x => x.status === "verified");
+      if (listo) { setFactor(listo.id); setPaso("codigo"); return; }
+      for (const x of (fs && fs.all || []).filter(x => x.status !== "verified")) await sb.auth.mfa.unenroll({ factorId: x.id });
+      const r = await q(sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "Qipo Arriendos " + Date.now() }));
+      setFactor(r.id); setQr(r.totp); setPaso("enrolar");
+    } catch (e) { setError(mensajeError(e)); setPaso("codigo"); }
+  })(); }, []);
+  const verificar = async e => {
+    e.preventDefault(); setError(""); setEnviando(true);
+    try { await q(sb.auth.mfa.challengeAndVerify({ factorId: factor, code: codigo.trim() })); onListo(); }
+    catch (err) { setError(/invalid|expired/i.test(err.message || "") ? "Código incorrecto o vencido. Usa el código que muestra la app ahora." : mensajeError(err)); }
+    finally { setEnviando(false); }
+  };
+  if (paso === "revisando") return <Cargando texto="Verificando la seguridad de la cuenta…" />;
+  return (
+    <PantallaCentrada ancho={440}>
+      <div style={{ fontSize: 28 }}>🔐</div>
+      <div className="h2" style={{ marginTop: 6 }}>Verificación en dos pasos</div>
+      {paso === "enrolar" ? <>
+        <div className="muted" style={{ margin: "6px 0 12px" }}>El panel de plataforma y el acceso de soporte a las empresas la exigen. Escanea este código con Google Authenticator, Microsoft Authenticator o similar, y escribe el código de 6 dígitos.</div>
+        {qr && <img src={qr.qr_code} alt="Código QR" style={{ width: 180, height: 180, background: "#fff", padding: 8, borderRadius: 10 }} />}
+        {qr && <div className="muted mono" style={{ fontSize: 11, wordBreak: "break-all", marginTop: 6 }}>Clave manual: {qr.secret}</div>}
+      </> : <div className="muted" style={{ margin: "6px 0 12px" }}>Escribe el código de 6 dígitos de tu app de autenticación.</div>}
+      <form onSubmit={verificar} className="grid" style={{ gap: 10, marginTop: 12 }}>
+        <input className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="000000" value={codigo} onChange={e => setCodigo(e.target.value.replace(/\D/g, ""))} autoFocus style={{ fontSize: 22, textAlign: "center", letterSpacing: 6 }} />
+        {error && <div style={{ color: "#B91C1C", fontSize: 12.5 }}>{error}</div>}
+        <button className="btn btn-primary" style={{ justifyContent: "center" }} disabled={codigo.length !== 6 || enviando}>{enviando ? "Verificando…" : "Verificar"}</button>
+        <button type="button" className="btn btn-ghost" onClick={onSalir}>‹ Volver</button>
+      </form>
+    </PantallaCentrada>
+  );
+}
+
+// Pide el motivo y abre un acceso de soporte de 2 horas (queda en la bitácora del cliente)
+function AccesoSoporteModal({ empresa, onAbierto, onClose }) {
+  const [motivo, setMotivo] = useState("");
+  const [error, setError] = useState("");
+  const abrir = async () => {
+    if (motivo.trim().length < 5) return setError("Describe el motivo (lo verá el cliente en su bitácora).");
+    try { const hasta = await q(sb.rpc("abrir_acceso_soporte", { p_empresa: empresa.id, p_motivo: motivo.trim() })); onAbierto(empresa.id, hasta); }
+    catch (e) { setError(mensajeError(e)); }
+  };
+  return (
+    <Modal titulo={`Entrar como soporte · ${empresa.nombre}`} onClose={onClose} pie={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-primary" onClick={abrir}>🛟 Entrar (2 horas)</button></>}>
+      <div className="muted" style={{ marginBottom: 10 }}>Tendrás los permisos de un super administrador durante 2 horas. El cliente verá en su bitácora que entraste, cuándo y por qué, y todo lo que hagas quedará con tu nombre.</div>
+      <Campo label="Motivo"><textarea className="input" rows={3} value={motivo} onChange={e => setMotivo(e.target.value)} placeholder="Ej: el cliente pidió ayuda para cargar sus contratos" autoFocus /></Campo>
+      {error && <div style={{ color: "#B91C1C", fontSize: 12.5, marginTop: 8 }}>{error}</div>}
+    </Modal>
+  );
+}
+
 function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
+  const [mfa, setMfa] = useState(false);
+  if (!mfa) return <DosPasos onListo={() => setMfa(true)} onSalir={onSalir} />;
+  return <PlataformaPanel sesionSb={sesionSb} empresas={empresas} onVer={onVer} onSalir={onSalir} />;
+}
+
+function PlataformaPanel({ sesionSb, empresas, onVer, onSalir }) {
   const [d, setD] = useState(null);
   const [tab, setTab] = useState("empresas");
   const [filtro, setFiltro] = useState("");
   const [abierta, setAbierta] = useState(null);
   const [aviso, setAviso] = useState("");
   const [error, setError] = useState("");
+  const [entrar, setEntrar] = useState(null);
   const toast = m => { setAviso(m); clearTimeout(window.__tp); window.__tp = setTimeout(() => setAviso(""), 3800); };
 
   const cargar = useCallback(async () => {
     try {
-      const [rol, emp, subs, planes, cobros, miembros, bit] = await Promise.all([
+      const [rol, emp, subs, planes, cobros, miembros, bit, accesos] = await Promise.all([
         q(sb.from("admins_plataforma").select("rol").eq("user_id", sesionSb.user.id).maybeSingle()),
-        q(sb.from("torre_empresas").select("*").order("creado", { ascending: false })),
+        q(sb.rpc("plataforma_empresas")),
         q(sb.from("suscripciones").select("*")),
         q(sb.from("planes").select("*").order("orden")),
         q(sb.from("cobros_suscripcion").select("*").order("periodo", { ascending: false }).limit(500)),
         q(sb.from("miembros").select("empresa_id, nombre, rol, activo")),
         q(sb.from("bitacora").select("creado, usuario, accion, empresa_id").is("empresa_id", null).order("creado", { ascending: false }).limit(50)),
+        q(sb.from("accesos_soporte").select("*").order("desde", { ascending: false }).limit(50)),
       ]);
-      setD({ rol: rol && rol.rol, emp, subs, planes, cobros, miembros, bit });
+      setD({ rol: rol && rol.rol, emp, subs, planes, cobros, miembros, bit, accesos });
       setError("");
     } catch (e) { setError(mensajeError(e)); }
   }, [sesionSb.user.id]);
@@ -3387,7 +3595,7 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
                     <td>{ev}</td>
                     <td className="num" style={{ color: pendienteDe(e.id) ? "#DC2626" : null }}>{pendienteDe(e.id) ? fmtCLP(pendienteDe(e.id)) : "—"}</td>
                     <td>{e.ultima_actividad ? fmtFecha(e.ultima_actividad.slice(0, 10)) : "—"}</td>
-                    <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-ghost btn-sm">Administrar</button>{puede(["super_admin", "soporte"]) && <> <button className="btn btn-ghost btn-sm" title="Entrar como soporte" onClick={x => { x.stopPropagation(); onVer(e.id); }}>🛟 Entrar</button></>}</td>
+                    <td style={{ whiteSpace: "nowrap" }}><button className="btn btn-ghost btn-sm">Administrar</button>{puede(["super_admin", "soporte"]) && <> <button className="btn btn-ghost btn-sm" title="Entrar como soporte" onClick={x => { x.stopPropagation(); setEntrar(e); }}>🛟 Entrar</button></>}</td>
                   </tr>);
               })}</tbody>
             </table></div>
@@ -3398,12 +3606,19 @@ function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
         {tab === "cobros" && <CobrosAdmin d={d} editable={puede(["super_admin", "contabilidad"])} accion={accion} />}
         {tab === "bitacora" && (
           <div className="card">
+            <div className="h2">Accesos de soporte a empresas</div>
+            {!d.accesos.length ? <div className="muted" style={{ marginBottom: 14 }}>Sin accesos registrados.</div> : <div className="table-wrap" style={{ marginBottom: 16 }}><table>
+              <thead><tr><th>Fecha</th><th>Quién</th><th>Empresa</th><th>Motivo</th><th>Hasta</th></tr></thead>
+              <tbody>{d.accesos.map(a => <tr key={a.id}><td>{fmtFecha(a.desde.slice(0, 10))} {new Date(a.desde).toTimeString().slice(0, 5)}</td><td>{a.nombre}</td><td>{(d.emp.find(x => x.id === a.empresa_id) || {}).nombre || "—"}</td><td>{a.motivo}</td>
+                <td>{a.cerrado ? "cerrado " + new Date(a.cerrado).toTimeString().slice(0, 5) : new Date(a.hasta) > new Date() ? "vigente hasta " + new Date(a.hasta).toTimeString().slice(0, 5) : "vencido"}</td></tr>)}</tbody></table></div>}
+            <div className="h2">Acciones de plataforma</div>
             {!d.bit.length ? <div className="muted">Sin acciones de plataforma registradas.</div> : d.bit.map((b, i) =>
               <div key={i} style={{ padding: "7px 0", borderBottom: `1px solid ${C.border}`, fontSize: 13 }}><span className="muted">{fmtFecha(b.creado.slice(0, 10))} {b.creado.slice(11, 16)} · {b.usuario}</span><div>{b.accion}</div></div>)}
           </div>
         )}
       </div>
-      {abiertaE && <EmpresaAdmin e={abiertaE} d={d} puede={puede} accion={accion} onVer={() => onVer(abiertaE.id)} onClose={() => setAbierta(null)} />}
+      {abiertaE && <EmpresaAdmin e={abiertaE} d={d} puede={puede} accion={accion} onVer={() => setEntrar(abiertaE)} onClose={() => setAbierta(null)} />}
+      {entrar && <AccesoSoporteModal empresa={entrar} onClose={() => setEntrar(null)} onAbierto={(id, hasta) => { setEntrar(null); onVer(id, hasta); }} />}
       {aviso && <div className="toast">{aviso}</div>}
     </div>
   );
@@ -3458,7 +3673,7 @@ function EmpresaAdmin({ e, d, puede, accion, onVer, onClose }) {
       <div className="grid g4" style={{ gap: 12 }}>
         <div className="card" style={{ padding: 14 }}><div className="label">Cartera</div><div style={{ fontSize: 24, fontWeight: 800 }}>{e.unidades}<span className="muted" style={{ fontSize: 13 }}> unidades{pl?.max_unidades ? ` de ${pl.max_unidades}` : ""}</span></div><div className="muted">{e.ocupadas} arrendadas · {Number(e.unidades) - Number(e.ocupadas)} desocupadas</div></div>
         <div className="card" style={{ padding: 14 }}><div className="label">Mensual</div><div style={{ fontSize: 24, fontWeight: 800 }}>{fmtCLP(precio)}</div><div className="muted">+ IVA · {f.ciclo === "anual" ? `anual ${fmtCLP(precio * 10)}` : "mensual"}</div></div>
-        <div className="card" style={{ padding: 14 }}><div className="label">Usuarios ({equipo.filter(m => m.activo).length}{pl?.max_usuarios ? ` de ${pl.max_usuarios}` : ""})</div>{equipo.map((m, i) => <div key={i} className="muted" style={m.activo ? null : { textDecoration: "line-through" }}>{m.nombre} · {m.rol === "dueno" ? "Dueño" : "Secretaria"}</div>)}</div>
+        <div className="card" style={{ padding: 14 }}><div className="label">Usuarios ({equipo.filter(m => m.activo).length}{pl?.max_usuarios ? ` de ${pl.max_usuarios}` : ""})</div>{equipo.map((m, i) => <div key={i} className="muted" style={m.activo ? null : { textDecoration: "line-through" }}>{m.nombre} · {nombreRol(m.rol)}</div>)}</div>
       </div>
 
       <div className="section-title">Suscripción</div>
@@ -3574,10 +3789,77 @@ function CobrosAdmin({ d, editable, accion }) {
   );
 }
 
+// Usuarios de la empresa. Super administrador: todo. Administrador: gestiona administradores y
+// corredores (no a los super administradores). Corredor: solo en corredoras, con su % de comisión.
+function UsuariosCard({ accion }) {
+  const { st, user, toast } = useApp();
+  const E = st.empresa.id, sus = st.suscripcion;
+  const esSuper = user.rol === "super_admin";
+  const conCorredores = planPermite(st, "propietarios");
+  const rolesAsignables = Object.keys(ROLES).filter(r => (r !== "super_admin" || esSuper) && (r !== "corredor" || conCorredores));
+  const [inv, setInv] = useState({ nombre: "", email: "", rol: "admin", comision: "" });
+  const puedeTocar = r => esSuper || r !== "super_admin";
+  const invitar = () => {
+    const email = inv.email.trim().toLowerCase();
+    if (!inv.nombre.trim() || !/^\S+@\S+\.\S+$/.test(email)) return toast("Ingresa nombre y un correo válido");
+    const maxU = sus && sus.maxUsuarios;
+    if (maxU && st.usuarios.filter(u => u.activo !== false).length + st.invitaciones.length >= maxU) return toast(`Tu plan ${sus.plan} permite hasta ${maxU} usuarios. Revisa los planes para invitar a más.`);
+    const com = inv.rol === "corredor" && inv.comision !== "" ? Number(inv.comision) : null;
+    if (com != null && !(com >= 0 && com <= 100)) return toast("La comisión debe estar entre 0 y 100%");
+    accion(() => q(sb.from("invitaciones").insert({ empresa_id: E, email, nombre: inv.nombre.trim(), rol: inv.rol, comision_pct: com })),
+      "Invitación creada", `Invitó a ${inv.nombre.trim()} (${email}) como ${nombreRol(inv.rol).toLowerCase()}${com != null ? ` con ${com}% de comisión` : ""}`);
+    setInv({ nombre: "", email: "", rol: "admin", comision: "" });
+  };
+  const cambiarRol = (u, rol) => {
+    if (rol === u.rol) return;
+    if (u.id === user.id && !confirm("¿Cambiar tu propio rol? Podrías perder acceso a esta sección.")) return;
+    accion(() => q(sb.from("miembros").update({ rol }).eq("empresa_id", E).eq("user_id", u.id)), "Rol actualizado", `Cambió a ${u.nombre} de ${nombreRol(u.rol).toLowerCase()} a ${nombreRol(rol).toLowerCase()}`);
+  };
+  const mensajeInvitacion = i => `Hola ${i.nombre}, te invité a ${st.empresa.nombre} en Qipo Arriendos como ${nombreRol(i.rol).toLowerCase()}. Crea tu cuenta con este correo (${i.email}) en: ${urlRetorno()}`;
+  return (
+    <div className="card">
+      <div className="h2">Usuarios</div>
+      <div className="muted" style={{ marginBottom: 10 }}>
+        <b>Super administrador</b>: todo, incluidos otros super administradores. <b>Administrador</b>: ingresos, multas, propietarios, liquidaciones, configuración y usuarios (salvo super administradores).
+        {conCorredores ? <> <b>Corredor</b>: propiedades, contratos, pagos, avisos e interesados; ve sus comisiones. No ve datos bancarios ni liquidaciones.</> : null} Todo queda en la bitácora.
+      </div>
+      <div className="table-wrap"><table>
+        <thead><tr><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+        <tbody>
+          {st.usuarios.map(u => (
+            <tr key={u.id}><td>{u.nombre}{u.id === user.id ? " (tú)" : ""}{u.rol === "corredor" && u.comisionPct !== "" ? <div className="muted">{u.comisionPct}% de la comisión</div> : null}</td>
+              <td>{puedeTocar(u.rol) && !user.soporte
+                ? <select className="select" style={{ minWidth: 170 }} value={u.rol} onChange={e => cambiarRol(u, e.target.value)}>{[...new Set([...rolesAsignables, u.rol])].map(r => <option key={r} value={r} disabled={!rolesAsignables.includes(r)}>{nombreRol(r)}</option>)}</select>
+                : nombreRol(u.rol)}</td>
+              <td>{u.activo === false ? <span className="tag" style={{ background: C.dangerBg, color: C.danger }}>Desactivado</span> : <span className="tag" style={{ background: C.successBg, color: C.success }}>Activo</span>}</td>
+              <td>{u.id !== user.id && puedeTocar(u.rol) && <button className="btn btn-ghost btn-sm" onClick={() => accion(() => q(sb.from("miembros").update({ activo: u.activo === false }).eq("empresa_id", E).eq("user_id", u.id)), "Listo", `${u.activo === false ? "Activó" : "Desactivó"} a ${u.nombre}`)}>{u.activo === false ? "Activar" : "Desactivar"}</button>}</td>
+            </tr>))}
+          {st.invitaciones.map(i => (
+            <tr key={i.email}><td>{i.nombre}<div className="muted">{i.email}</div></td><td>{nombreRol(i.rol)}{i.rol === "corredor" && i.comision_pct != null ? <div className="muted">{Number(i.comision_pct)}% de la comisión</div> : null}</td>
+              <td><span className="tag" style={{ background: C.warningBg, color: C.warning }}>Invitación pendiente</span></td>
+              <td><div className="row" style={{ flexWrap: "nowrap" }}>
+                <a className="btn btn-mail btn-sm" href={linkMail(i.email, `Invitación a ${st.empresa.nombre}`, mensajeInvitacion(i))}>Correo</a>
+                <a className="btn btn-wa btn-sm" target="_blank" rel="noreferrer" href={`https://wa.me/?text=${encodeURIComponent(mensajeInvitacion(i))}`}>WhatsApp</a>
+                {puedeTocar(i.rol) && <button className="btn btn-ghost btn-sm" onClick={() => accion(() => q(sb.from("invitaciones").delete().eq("empresa_id", E).eq("email", i.email)), "Invitación anulada", `Anuló la invitación de ${i.email}`)}>Anular</button>}
+              </div></td>
+            </tr>))}
+        </tbody></table></div>
+      <div className="label" style={{ marginTop: 16 }}>Invitar usuario</div>
+      <div className="form-grid">
+        <Campo label="Nombre"><input className="input" value={inv.nombre} onChange={e => setInv({ ...inv, nombre: e.target.value })} /></Campo>
+        <Campo label="Correo"><input className="input" type="email" value={inv.email} onChange={e => setInv({ ...inv, email: e.target.value })} /></Campo>
+        <Campo label="Rol"><select className="select" value={inv.rol} onChange={e => setInv({ ...inv, rol: e.target.value })}>{rolesAsignables.map(r => <option key={r} value={r}>{nombreRol(r)}</option>)}</select></Campo>
+        {inv.rol === "corredor" && <Campo label="Comisión (% de la comisión de administración)"><input className="input" type="number" min="0" max="100" step="0.5" value={inv.comision} placeholder="Ej: 40" onChange={e => setInv({ ...inv, comision: e.target.value })} /></Campo>}
+      </div>
+      <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={invitar}>Invitar</button>
+      <div className="muted" style={{ marginTop: 8 }}>Envíale el enlace por correo o WhatsApp: la persona se registra con ese correo, lo confirma y queda dentro de tu empresa.{!conCorredores ? " El rol Corredor está disponible en los planes para corredoras." : ""}</div>
+    </div>
+  );
+}
+
 function ConfigView() {
   const { st, update, user, toast, recargarUF, recargar } = useApp();
   const [emp, setEmp] = useState(st.empresa);
-  const [inv, setInv] = useState({ nombre: "", email: "", rol: "secretaria" });
   const [clave, setClave] = useState({ actual: "", nueva: "", repetir: "" });
   const [haylocal, setHayLocal] = useState(false);
   const archivo = useRef(null);
@@ -3593,16 +3875,6 @@ function ConfigView() {
       toast(ok); recargar();
     } catch (e) { toast(mensajeError(e)); }
   };
-  const invitar = () => {
-    const email = inv.email.trim().toLowerCase();
-    if (!inv.nombre.trim() || !/^\S+@\S+\.\S+$/.test(email)) return toast("Ingresa nombre y un correo válido");
-    const maxU = sus && sus.maxUsuarios;
-    if (maxU && st.usuarios.filter(u => u.activo !== false).length + st.invitaciones.length >= maxU) return toast(`Tu plan ${sus.plan} permite hasta ${maxU} usuarios. Revisa los planes más abajo para invitar a más.`);
-    accion(() => q(sb.from("invitaciones").insert({ empresa_id: E, email, nombre: inv.nombre.trim(), rol: inv.rol })),
-      "Invitación creada", `Invitó a ${inv.nombre.trim()} (${email}) como ${inv.rol}`);
-    setInv({ nombre: "", email: "", rol: "secretaria" });
-  };
-  const mensajeInvitacion = i => `Hola ${i.nombre}, te invité a ${st.empresa.nombre} en Qipo Arriendos. Crea tu cuenta con este correo (${i.email}) en: ${urlRetorno()}`;
   // Pide la clave actual para evitar cambios por autocompletado del navegador o descuido
   const cambiarClave = async () => {
     if (!clave.actual) return toast("Escribe tu clave actual");
@@ -3658,35 +3930,10 @@ function ConfigView() {
         </div>
       </div>
 
+      <UsuariosCard accion={accion} />
+
       <div className="card">
-        <div className="h2">Usuarios</div>
-        <div className="muted" style={{ marginBottom: 10 }}>La <b>secretaria</b> puede agregar y editar propiedades, registrar pagos, enviar avisos y generar contratos. Solo el <b>dueño</b> ve los ingresos, decide las multas (activar/condonar), elimina datos y administra usuarios. Todo queda en la bitácora.</div>
-        <div className="table-wrap"><table>
-          <thead><tr><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
-          <tbody>
-            {st.usuarios.map(u => (
-              <tr key={u.id}><td>{u.nombre}{u.id === user.id ? " (tú)" : ""}</td><td>{u.rol === "dueno" ? "Dueño" : "Secretaria"}</td>
-                <td>{u.activo === false ? <span className="tag" style={{ background: C.dangerBg, color: C.danger }}>Desactivado</span> : <span className="tag" style={{ background: C.successBg, color: C.success }}>Activo</span>}</td>
-                <td>{u.id !== user.id && <button className="btn btn-ghost btn-sm" onClick={() => accion(() => q(sb.from("miembros").update({ activo: u.activo === false }).eq("empresa_id", E).eq("user_id", u.id)), "Listo", `${u.activo === false ? "Activó" : "Desactivó"} a ${u.nombre}`)}>{u.activo === false ? "Activar" : "Desactivar"}</button>}</td>
-              </tr>))}
-            {st.invitaciones.map(i => (
-              <tr key={i.email}><td>{i.nombre}<div className="muted">{i.email}</div></td><td>{i.rol === "dueno" ? "Dueño" : "Secretaria"}</td>
-                <td><span className="tag" style={{ background: C.warningBg, color: C.warning }}>Invitación pendiente</span></td>
-                <td><div className="row" style={{ flexWrap: "nowrap" }}>
-                  <a className="btn btn-mail btn-sm" href={linkMail(i.email, `Invitación a ${st.empresa.nombre}`, mensajeInvitacion(i))}>Enviar</a>
-                  <button className="btn btn-ghost btn-sm" onClick={() => accion(() => q(sb.from("invitaciones").delete().eq("empresa_id", E).eq("email", i.email)), "Invitación anulada", `Anuló la invitación de ${i.email}`)}>Anular</button>
-                </div></td>
-              </tr>))}
-          </tbody></table></div>
-        <div className="label" style={{ marginTop: 16 }}>Invitar usuario</div>
-        <div className="form-grid">
-          <Campo label="Nombre"><input className="input" value={inv.nombre} onChange={e => setInv({ ...inv, nombre: e.target.value })} /></Campo>
-          <Campo label="Correo"><input className="input" type="email" value={inv.email} onChange={e => setInv({ ...inv, email: e.target.value })} /></Campo>
-          <Campo label="Rol"><select className="select" value={inv.rol} onChange={e => setInv({ ...inv, rol: e.target.value })}><option value="secretaria">Secretaria</option><option value="dueno">Dueño</option></select></Campo>
-        </div>
-        <button className="btn btn-primary" style={{ marginTop: 12 }} onClick={invitar}>Invitar</button>
-        <div className="muted" style={{ marginTop: 8 }}>La persona se registra en esta misma página con ese correo y queda dentro de tu empresa.</div>
-        <div className="label" style={{ marginTop: 16 }}>Cambiar mi clave</div>
+        <div className="h2">Mi clave</div>
         <div className="form-grid">
           <Campo label="Clave actual"><input className="input" type="password" value={clave.actual} onChange={e => setClave({ ...clave, actual: e.target.value })} autoComplete="current-password" name="clave-actual" /></Campo>
           <Campo label="Clave nueva"><input className="input" type="password" value={clave.nueva} onChange={e => setClave({ ...clave, nueva: e.target.value })} autoComplete="new-password" name="clave-nueva" /></Campo>
@@ -3719,10 +3966,12 @@ const VISTAS = [
   { id: "cobranza", label: "Cobranza", icono: "💵", grupo: "Gestión" },
   { id: "disponibles", label: "Desocupadas", icono: "🏷️", grupo: "Gestión" },
   { id: "contratos", label: "Contratos y anexos", icono: "📄", grupo: "Gestión" },
-  { id: "propietarios", label: "Propietarios", icono: "👤", grupo: "Corredora", soloDueno: true },
-  { id: "liquidaciones", label: "Liquidaciones", icono: "🧮", grupo: "Corredora", soloDueno: true },
-  { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloDueno: true },
-  { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloDueno: true },
+  { id: "propietarios", label: "Propietarios", icono: "👤", grupo: "Corredora", soloAdmin: true },
+  { id: "liquidaciones", label: "Liquidaciones", icono: "🧮", grupo: "Corredora", soloAdmin: true },
+  { id: "corredores", label: "Corredores", icono: "🤝", grupo: "Corredora", soloAdmin: true },
+  { id: "comisiones", label: "Mis comisiones", icono: "💼", grupo: "Corredora", soloCorredor: true },
+  { id: "bitacora", label: "Bitácora", icono: "🧾", grupo: "Administración", soloAdmin: true },
+  { id: "config", label: "Configuración", icono: "⚙️", grupo: "Administración", soloAdmin: true },
 ];
 const TABLAS_EN_VIVO = ["propiedades", "unidades", "contratos", "reajustes", "pagos", "abonos", "documentos", "interesados", "miembros", "propietarios", "liquidaciones"];
 
@@ -3744,7 +3993,7 @@ function App() {
   const [esAdmin, setEsAdmin] = useState(false);
   const [empresaId, setEmpresaId] = useState(null);
   const [plataforma, setPlataforma] = useState(() => location.hash === "#plataforma");
-  // Soporte HM: admin de plataforma dentro de una inmobiliaria, con los permisos del dueño y sin ser miembro
+  // Soporte HM: admin de plataforma dentro de una inmobiliaria, con los permisos de super administrador y sin ser miembro
   const [soporte, setSoporte] = useState(false);
   const [rolAdmin, setRolAdmin] = useState(null);
   const [st, setSt] = useState(null);
@@ -3783,7 +4032,12 @@ function App() {
     const activas = ms.filter(m => m.activo);
     setEsAdmin(!!adm); setRolAdmin(adm ? adm.rol : null); setEmpresas(activas);
     const enSoporte = adm && ["super_admin", "soporte"].includes(adm.rol) ? local.get("qipo-soporte") : null;
-    if (enSoporte) { setSoporte(true); setEmpresaId(enSoporte); return; }
+    if (enSoporte) {
+      // el acceso de soporte dura 2 horas: si venció (o falta la verificación en dos pasos) se vuelve a la plataforma
+      const vigente = await sb.from("accesos_soporte").select("hasta").eq("empresa_id", enSoporte).eq("user_id", uidSesion).is("cerrado", null).gt("hasta", new Date().toISOString()).order("hasta", { ascending: false }).limit(1);
+      if (vigente.data && vigente.data.length) { setSoporte(vigente.data[0].hasta); setEmpresaId(enSoporte); return; }
+      local.set("qipo-soporte", null); setPlataforma(true);
+    }
     const guardada = local.get("qipo-empresa");
     const elegida = activas.find(m => m.empresa_id === guardada) || (activas.length === 1 ? activas[0] : null);
     setSoporte(false); setEmpresaId(elegida ? elegida.empresa_id : null);
@@ -3818,7 +4072,7 @@ function App() {
   }, [empresaId]);
 
   const user = st && uidSesion && (() => {
-    if (soporte) return { id: uidSesion, nombre: `Soporte HM · ${(sesionSb.user.user_metadata || {}).nombre || sesionSb.user.email}`, rol: "dueno", soporte: true, activo: true, email: sesionSb.user.email };
+    if (soporte) return { id: uidSesion, nombre: `Soporte HM · ${(sesionSb.user.user_metadata || {}).nombre || sesionSb.user.email}`, rol: "super_admin", soporte: true, activo: true, email: sesionSb.user.email };
     const m = st.usuarios.find(u => u.id === uidSesion && u.activo !== false);
     return m ? { ...m, email: sesionSb.user.email } : null;
   })();
@@ -3860,7 +4114,7 @@ function App() {
   if (!empresas) return <><style>{css}</style><Cargando /></>;
   const irPlataforma = v => { setPlataforma(v); history.replaceState(null, "", v ? "#plataforma" : location.pathname + location.search); };
   if (esAdmin && plataforma) return <><style>{css}</style><PlataformaView sesionSb={sesionSb} empresas={empresas}
-    onVer={id => { local.set("qipo-soporte", id); setSoporte(true); setVista("panel"); setFicha(null); if (id !== empresaId) setSt(null); setEmpresaId(id); irPlataforma(false); }} onSalir={() => irPlataforma(false)} /></>;
+    onVer={(id, hasta) => { local.set("qipo-soporte", id); setSoporte(hasta || true); setVista("panel"); setFicha(null); if (id !== empresaId) setSt(null); setEmpresaId(id); irPlataforma(false); }} onSalir={() => irPlataforma(false)} /></>;
   if (!empresaId) return <><style>{css}</style><Bienvenida sesionSb={sesionSb} empresas={empresas} esAdmin={esAdmin} onPlataforma={() => irPlataforma(true)}
     onElegir={setEmpresaId} onCreada={id => { local.set("qipo-empresa", id); setIntento(i => i + 1); }} /></>;
   if (!st) return <><style>{css}</style><Cargando texto="Cargando propiedades…" /></>;
@@ -3873,10 +4127,10 @@ function App() {
     ir: v => setVista(v),
   };
   const atrasados = listarUnidades(st).filter(x => x.u.contrato && calcUnidad(x.u, hoy, ctx.uf).estado === "atrasado").length;
-  const vistas = VISTAS.filter(v => !v.soloDueno || user.rol === "dueno");
+  const vistas = VISTAS.filter(v => (!v.soloAdmin || esAdminEmp(user)) && (!v.soloCorredor || user.rol === "corredor"));
   const grupos = [...new Set(vistas.map(v => v.grupo))];
   const vistaOk = vistas.some(v => v.id === vista) ? vista : "panel";
-  const Vista = { panel: PanelView, mapa: MapaView, propiedades: PropiedadesView, cobranza: CobranzaView, disponibles: DisponiblesView, contratos: ContratosView, propietarios: PropietariosView, liquidaciones: LiquidacionesView, bitacora: BitacoraView, config: ConfigView }[vistaOk];
+  const Vista = { panel: PanelView, mapa: MapaView, propiedades: PropiedadesView, cobranza: CobranzaView, disponibles: DisponiblesView, contratos: ContratosView, propietarios: PropietariosView, liquidaciones: LiquidacionesView, corredores: CorredoresView, comisiones: CorredoresView, bitacora: BitacoraView, config: ConfigView }[vistaOk];
   const sus = st.suscripcion;
   const bloqueada = sus && ["suspendida", "cancelada"].includes(sus.estado);
 
@@ -3901,9 +4155,9 @@ function App() {
           ))}
           <div style={{ marginTop: "auto", padding: "12px 8px 0", borderTop: "1px solid rgba(255,255,255,.08)" }}>
             <div style={{ color: "#fff", fontSize: 12.5, fontWeight: 600 }}>{user.nombre}</div>
-            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{soporte ? "Soporte HM (sin ocupar cupo)" : (user.rol === "dueno" ? "Dueño" : "Secretaria") + (esAdmin ? " · admin HM" : "")}</div>
+            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 11 }}>{soporte ? "Soporte HM (sin ocupar cupo)" : nombreRol(user.rol) + (esAdmin ? " · admin HM" : "")}</div>
             {esAdmin && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { setFicha(null); irPlataforma(true); }}>🛰️ Panel de plataforma</button>}
-            {(empresas.length > 1 || soporte) && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { local.set("qipo-empresa", null); local.set("qipo-soporte", null); setSoporte(false); setFicha(null); setEmpresaId(null); }}>{soporte ? "↩ Salir del modo soporte" : "⇄ Cambiar empresa"}</button>}
+            {(empresas.length > 1 || soporte) && <button className="nav-item" style={{ marginTop: 8, paddingLeft: 0 }} onClick={() => { if (soporte) sb.rpc("cerrar_acceso_soporte", { p_empresa: empresaId }); local.set("qipo-empresa", null); local.set("qipo-soporte", null); setSoporte(false); setFicha(null); setEmpresaId(null); }}>{soporte ? "↩ Salir del modo soporte" : "⇄ Cambiar empresa"}</button>}
             <button className="nav-item" style={{ paddingLeft: 0 }} onClick={salir}>↩ Cerrar sesión</button>
           </div>
         </aside>
@@ -3921,7 +4175,7 @@ function App() {
           </div>
           {soporte && (
             <div className="row between" style={{ padding: "8px 24px", fontSize: 12.5, background: "#EEF2FF", color: "#3730A3", borderBottom: `1px solid ${C.border}` }}>
-              <span>🛟 <b>Modo soporte</b> en {st.empresa.nombre}: ves y haces lo mismo que el dueño. Tus cambios quedan en su bitácora como “Soporte HM”.</span>
+              <span>🛟 <b>Modo soporte</b> en {st.empresa.nombre}: ves y haces lo mismo que un super administrador{typeof soporte === "string" ? ` hasta las ${new Date(soporte).toTimeString().slice(0, 5)}` : ""}. El cliente ve tu acceso y tus cambios en su bitácora.</span>
               <button className="btn btn-sm" style={{ background: "#fff" }} onClick={() => { setFicha(null); irPlataforma(true); }}>🛰️ Volver a plataforma</button>
             </div>
           )}
