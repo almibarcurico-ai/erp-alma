@@ -195,6 +195,7 @@
     .visor button { position: absolute; background: rgba(255,255,255,.14); color: #fff; border: none; width: 48px; height: 48px; border-radius: 50%; font-size: 24px; cursor: pointer; }
     .visor .izq { left: 18px; } .visor .der { right: 18px; } .visor .x { top: 18px; right: 18px; font-size: 20px; }
     .visor .n { position: absolute; bottom: 20px; color: #fff; font-weight: 700; }
+    [hidden] { display: none !important; }
     .wa-flotante { position: fixed; right: 18px; bottom: 18px; width: 58px; height: 58px; border-radius: 50%; background: #1FAF54; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 26px rgba(31,175,84,.45); z-index: 800; }
     .wa-flotante svg { width: 30px; height: 30px; fill: #fff; }
 
@@ -617,7 +618,9 @@ function pintarEmpresa() {
     comunas.length && `<a href="#propiedades">${SVG.lugar}${esc(comunas.join(", "))}</a>`].filter(Boolean).join("");
   $("pie").textContent = `© ${new Date().getFullYear()} ${e.nombre}`;
   if (wa) { $("wa-flotante").href = wa; $("wa-flotante").hidden = false; }
-  ["buscador", "filtros", "barra", "servicios", "publica", "contacto"].forEach(id => $(id).hidden = false);
+  // la invitación a propietarios solo se muestra si hay cómo contactar
+  ["buscador", "filtros", "barra", "servicios", "contacto"].forEach(id => $(id).hidden = false);
+  $("publica").hidden = !$("publica-acciones").innerHTML;
 }
 
 async function iniciar() {
