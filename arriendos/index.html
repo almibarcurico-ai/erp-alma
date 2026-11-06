@@ -3742,8 +3742,7 @@ function AccesoSoporteModal({ empresa, onAbierto, onClose }) {
 }
 
 function PlataformaView({ sesionSb, empresas, onVer, onSalir }) {
-  const [mfa, setMfa] = useState(false);
-  if (!mfa) return <DosPasos onListo={() => setMfa(true)} onSalir={onSalir} />;
+  // Sin verificación en dos pasos desde el 6-nov-2026 (pedido de Héctor); DosPasos queda por si se reactiva
   return <PlataformaPanel sesionSb={sesionSb} empresas={empresas} onVer={onVer} onSalir={onSalir} />;
 }
 
